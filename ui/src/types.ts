@@ -105,3 +105,51 @@ export function parseEntrypointMeta(_type: EntrypointType, metaJson?: string): H
     return null;
   }
 }
+
+// Call info for callers/callees
+export interface CallInfo {
+  symbol: Symbol;
+  call_kind: CallKind;
+  caller_file: string;
+  caller_line: number;
+  count: number;
+  tags?: Tag[];
+}
+
+// Extended symbol response with callers/callees
+export interface SymbolDetails {
+  symbol: Symbol;
+  tags: Tag[];
+  package?: {
+    pkg_path: string;
+    module?: string;
+    dir?: string;
+    layer?: string;
+  };
+  callees: CallInfo[];
+  callers: CallInfo[];
+}
+
+// Filter presets
+export type FilterPreset = 'default' | 'deep-dive' | 'high-level';
+
+export const FILTER_PRESETS: Record<FilterPreset, GraphFilter> = {
+  'default': {
+    hideStdlib: false,
+    hideVendors: false,
+    stopAtIO: false,
+    maxDepth: 6,
+  },
+  'deep-dive': {
+    hideStdlib: false,
+    hideVendors: false,
+    stopAtIO: false,
+    maxDepth: 10,
+  },
+  'high-level': {
+    hideStdlib: true,
+    hideVendors: true,
+    stopAtIO: true,
+    maxDepth: 3,
+  },
+};

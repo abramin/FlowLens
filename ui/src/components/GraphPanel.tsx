@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,6 +6,7 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   MarkerType,
   Handle,
   Position,
@@ -22,6 +23,9 @@ interface GraphPanelProps {
   error: Error | null;
   onNodeClick: (nodeId: number) => void;
   onNodeExpand: (nodeId: number) => void;
+  onNodePin?: (nodeId: number) => void;
+  selectedNodeId: number | null;
+  pinnedNodeIds: Set<number>;
   filters: GraphFilter;
 }
 
@@ -30,11 +34,36 @@ const NODE_COLORS = {
   root: { bg: '#3b82f6', border: '#1d4ed8', text: '#ffffff' },
   io: { bg: '#f59e0b', border: '#d97706', text: '#ffffff' },
   expanded: { bg: '#374151', border: '#4b5563', text: '#e5e7eb' },
+  selected: { bg: '#4f46e5', border: '#6366f1', text: '#ffffff' },
+  pinned: { bg: '#059669', border: '#10b981', text: '#ffffff' },
   default: { bg: '#1f2937', border: '#374151', text: '#9ca3af' },
 };
 
-function getNodeColor(node: GraphNode, isRoot: boolean) {
+// Tag colors for badges
+const TAG_COLORS: Record<string, string> = {
+  'io:db': 'bg-amber-700 text-amber-100',
+  'io:net': 'bg-orange-700 text-orange-100',
+  'io:fs': 'bg-yellow-700 text-yellow-100',
+  'io:bus': 'bg-red-700 text-red-100',
+  'layer:handler': 'bg-blue-700 text-blue-100',
+  'layer:service': 'bg-purple-700 text-purple-100',
+  'layer:store': 'bg-indigo-700 text-indigo-100',
+  'layer:domain': 'bg-pink-700 text-pink-100',
+  'pure': 'bg-green-700 text-green-100',
+  'impure': 'bg-red-700 text-red-100',
+};
+
+function getTagColor(tag: string): string {
+  if (TAG_COLORS[tag]) return TAG_COLORS[tag];
+  if (tag.startsWith('io:')) return 'bg-amber-800 text-amber-200';
+  if (tag.startsWith('layer:')) return 'bg-purple-800 text-purple-200';
+  return 'bg-gray-600 text-gray-200';
+}
+
+function getNodeColor(node: GraphNode, isRoot: boolean, isSelected: boolean, isPinned: boolean) {
+  if (isSelected) return NODE_COLORS.selected;
   if (isRoot) return NODE_COLORS.root;
+  if (isPinned) return NODE_COLORS.pinned;
   if (node.tags.some((t) => t.startsWith('io:'))) return NODE_COLORS.io;
   if (node.expanded) return NODE_COLORS.expanded;
   return NODE_COLORS.default;
@@ -45,25 +74,30 @@ interface CustomNodeProps {
     label: string;
     node: GraphNode;
     isRoot: boolean;
+    isSelected: boolean;
+    isPinned: boolean;
     onExpand: () => void;
-    onClick: () => void;
+    onClick: (e: React.MouseEvent) => void;
   };
 }
 
 function CustomNode({ data }: CustomNodeProps) {
-  const colors = getNodeColor(data.node, data.isRoot);
-  const hasIOTag = data.node.tags.some((t) => t.startsWith('io:'));
+  const colors = getNodeColor(data.node, data.isRoot, data.isSelected, data.isPinned);
+  const visibleTags = data.node.tags.slice(0, 3); // Show max 3 tags
+  const hasMoreTags = data.node.tags.length > 3;
 
   return (
     <div
-      className="px-3 py-2 rounded-lg shadow-lg cursor-pointer transition-transform hover:scale-105"
+      className={`px-3 py-2 rounded-lg shadow-lg cursor-pointer transition-all duration-200 hover:scale-105 ${
+        data.isSelected ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-gray-900' : ''
+      } ${data.isPinned ? 'ring-2 ring-emerald-400' : ''}`}
       style={{
         backgroundColor: colors.bg,
         borderWidth: 2,
         borderColor: colors.border,
         borderStyle: 'solid',
-        minWidth: 120,
-        maxWidth: 200,
+        minWidth: 140,
+        maxWidth: 220,
       }}
       onClick={data.onClick}
       onDoubleClick={(e) => {
@@ -73,29 +107,51 @@ function CustomNode({ data }: CustomNodeProps) {
     >
       <Handle type="target" position={Position.Top} className="!bg-gray-500" />
       <div className="text-center">
+        {/* Status indicators */}
+        <div className="flex justify-center gap-1 mb-1">
+          {data.isPinned && (
+            <span className="text-[10px] text-emerald-300" title="Pinned">📌</span>
+          )}
+          {data.node.expanded && (
+            <span className="text-[10px] text-gray-400" title="Expanded">▼</span>
+          )}
+          {!data.node.expanded && data.node.depth > 0 && (
+            <span className="text-[10px] text-gray-500" title="Collapsed - Double-click to expand">▶</span>
+          )}
+        </div>
+
+        {/* Function name */}
         <div
           className="text-xs font-medium truncate"
           style={{ color: colors.text }}
-          title={data.node.name}
+          title={data.node.recv_type ? `(${data.node.recv_type}).${data.node.name}` : data.node.name}
         >
           {data.node.recv_type ? `(${data.node.recv_type}).` : ''}
           {data.node.name}
         </div>
+
+        {/* Package name */}
         <div className="text-xs opacity-60 truncate" style={{ color: colors.text }}>
           {data.node.pkg_path.split('/').pop()}
         </div>
-        {hasIOTag && (
-          <div className="mt-1 flex justify-center gap-1">
-            {data.node.tags
-              .filter((t) => t.startsWith('io:'))
-              .map((tag) => (
-                <span
-                  key={tag}
-                  className="px-1 py-0.5 text-[10px] bg-black/20 rounded"
-                >
-                  {tag.replace('io:', '')}
-                </span>
-              ))}
+
+        {/* Tags */}
+        {visibleTags.length > 0 && (
+          <div className="mt-1 flex flex-wrap justify-center gap-0.5">
+            {visibleTags.map((tag) => (
+              <span
+                key={tag}
+                className={`px-1 py-0.5 text-[9px] rounded ${getTagColor(tag)}`}
+                title={tag}
+              >
+                {tag.includes(':') ? tag.split(':')[1] : tag}
+              </span>
+            ))}
+            {hasMoreTags && (
+              <span className="px-1 py-0.5 text-[9px] bg-gray-600 text-gray-300 rounded">
+                +{data.node.tags.length - 3}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -116,7 +172,21 @@ export function GraphPanel({
   error,
   onNodeClick,
   onNodeExpand,
+  onNodePin,
+  selectedNodeId,
+  pinnedNodeIds,
 }: GraphPanelProps) {
+  const { fitView } = useReactFlow();
+
+  // Handle node click with shift detection for pinning
+  const handleNodeClick = useCallback((nodeId: number, e: React.MouseEvent) => {
+    if (e.shiftKey && onNodePin) {
+      onNodePin(nodeId);
+    } else {
+      onNodeClick(nodeId);
+    }
+  }, [onNodeClick, onNodePin]);
+
   // Convert API nodes to React Flow nodes
   const flowNodes = useMemo(() => {
     if (!nodes.length) return [];
@@ -162,8 +232,8 @@ export function GraphPanel({
 
       // Second pass: position nodes
       const depthIndices = new Map<number, number>();
-      const nodeWidth = 180;
-      const nodeHeight = 100;
+      const nodeWidth = 200;
+      const nodeHeight = 120;
 
       while (queue.length > 0) {
         const { id, depth } = queue.shift()!;
@@ -201,33 +271,56 @@ export function GraphPanel({
           label: node.name,
           node,
           isRoot: node.id === rootId,
+          isSelected: node.id === selectedNodeId,
+          isPinned: pinnedNodeIds.has(node.id),
           onExpand: () => onNodeExpand(node.id),
-          onClick: () => onNodeClick(node.id),
+          onClick: (e: React.MouseEvent) => handleNodeClick(node.id, e),
         },
       };
     });
-  }, [nodes, edges, rootId, onNodeClick, onNodeExpand]);
+  }, [nodes, edges, rootId, selectedNodeId, pinnedNodeIds, handleNodeClick, onNodeExpand]);
 
   // Convert API edges to React Flow edges
   const flowEdges = useMemo(() => {
-    return edges.map((edge): Edge => ({
-      id: `${edge.source_id}-${edge.target_id}`,
-      source: String(edge.source_id),
-      target: String(edge.target_id),
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 15,
-        height: 15,
-        color: '#6b7280',
-      },
-      style: {
-        stroke: '#6b7280',
-        strokeWidth: edge.callsite_count > 1 ? 2 : 1,
-      },
-      label: edge.call_kind !== 'static' ? edge.call_kind : undefined,
-      labelStyle: { fontSize: 10, fill: '#9ca3af' },
-      labelBgStyle: { fill: '#1f2937' },
-    }));
+    return edges.map((edge): Edge => {
+      // Different colors for different call kinds
+      const getEdgeColor = (kind: string) => {
+        switch (kind) {
+          case 'interface': return '#a78bfa'; // purple for interface calls
+          case 'funcval': return '#f472b6'; // pink for function values
+          case 'defer': return '#facc15'; // yellow for defer
+          case 'go': return '#34d399'; // green for goroutines
+          case 'unknown': return '#f87171'; // red for unknown
+          default: return '#6b7280'; // gray for static
+        }
+      };
+
+      const edgeColor = getEdgeColor(edge.call_kind);
+      const label = edge.call_kind !== 'static'
+        ? `${edge.call_kind}${edge.callsite_count > 1 ? ` (×${edge.callsite_count})` : ''}`
+        : edge.callsite_count > 1 ? `×${edge.callsite_count}` : undefined;
+
+      return {
+        id: `${edge.source_id}-${edge.target_id}`,
+        source: String(edge.source_id),
+        target: String(edge.target_id),
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 15,
+          height: 15,
+          color: edgeColor,
+        },
+        style: {
+          stroke: edgeColor,
+          strokeWidth: edge.callsite_count > 1 ? 2.5 : 1.5,
+          strokeDasharray: edge.call_kind === 'interface' ? '5,5' : undefined,
+        },
+        label,
+        labelStyle: { fontSize: 10, fill: '#d1d5db' },
+        labelBgStyle: { fill: '#1f2937', fillOpacity: 0.8 },
+        animated: edge.call_kind === 'go', // Animate goroutine calls
+      };
+    });
   }, [edges]);
 
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(flowNodes);
@@ -291,8 +384,29 @@ export function GraphPanel({
           className="!bg-gray-800 !border-gray-700"
         />
       </ReactFlow>
-      <div className="absolute bottom-4 left-4 text-xs text-gray-500">
-        Double-click a node to expand
+      {/* Help text and fit button */}
+      <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
+        <div className="text-xs text-gray-500 space-y-0.5">
+          <div>Double-click to expand • Shift+click to pin</div>
+          <div className="flex gap-3">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-0.5 bg-gray-500"></span> static
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-0.5 bg-purple-400" style={{borderStyle: 'dashed', borderWidth: 1, borderColor: '#a78bfa'}}></span> interface
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-0.5 bg-green-400"></span> go
+            </span>
+          </div>
+        </div>
+        <button
+          onClick={() => fitView({ padding: 0.2, duration: 300 })}
+          className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded border border-gray-700 transition-colors"
+          title="Fit graph to view"
+        >
+          Fit View
+        </button>
       </div>
     </div>
   );

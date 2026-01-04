@@ -238,14 +238,30 @@ func (s *Server) handleSymbol(w http.ResponseWriter, r *http.Request) {
 	// Get package info
 	pkg, _ := s.store.GetPackageByPath(sym.PkgPath)
 
+	// Get callees (functions this symbol calls)
+	callees, err := s.store.GetCallees(store.SymbolID(id))
+	if err != nil {
+		callees = []store.CalleeInfo{}
+	}
+
+	// Get callers (functions that call this symbol)
+	callers, err := s.store.GetCallers(store.SymbolID(id))
+	if err != nil {
+		callers = []store.CallerInfo{}
+	}
+
 	response := struct {
 		*store.Symbol
-		Tags    []store.Tag    `json:"tags"`
-		Package *store.Package `json:"package,omitempty"`
+		Tags    []store.Tag        `json:"tags"`
+		Package *store.Package     `json:"package,omitempty"`
+		Callees []store.CalleeInfo `json:"callees"`
+		Callers []store.CallerInfo `json:"callers"`
 	}{
 		Symbol:  sym,
 		Tags:    tags,
 		Package: pkg,
+		Callees: callees,
+		Callers: callers,
 	}
 
 	writeJSON(w, http.StatusOK, response)
