@@ -107,6 +107,13 @@ function AppContent() {
     setFilters(newFilters);
   }, []);
 
+  const handleNavigateToNode = useCallback((symbolId: number) => {
+    const node = graphNodes.find((n) => n.id === symbolId);
+    if (node) {
+      setSelectedNode(node);
+    }
+  }, [graphNodes]);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-950">
       {/* Left Panel - Entrypoints */}
@@ -142,6 +149,8 @@ function AppContent() {
           selectedNode={selectedNode}
           filters={filters}
           onFiltersChange={handleFiltersChange}
+          onNavigateToNode={handleNavigateToNode}
+          graphNodes={graphNodes}
         />
       </div>
     </div>

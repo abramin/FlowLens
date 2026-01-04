@@ -1,4 +1,4 @@
-import type { Entrypoint, GraphResponse, GraphFilter, Stats, Symbol, Tag } from './types';
+import type { Entrypoint, GraphResponse, GraphFilter, Stats, Symbol, Tag, SymbolDetails } from './types';
 
 const API_BASE = '/api';
 
@@ -28,8 +28,8 @@ export async function getEntrypointById(id: number): Promise<Entrypoint> {
   return fetchJSON<Entrypoint>(`${API_BASE}/entrypoints/${id}`);
 }
 
-export async function getSymbol(id: number): Promise<{ symbol: Symbol; tags: Tag[] }> {
-  return fetchJSON<{ symbol: Symbol; tags: Tag[] }>(`${API_BASE}/symbol/${id}`);
+export async function getSymbol(id: number): Promise<SymbolDetails> {
+  return fetchJSON<SymbolDetails>(`${API_BASE}/symbol/${id}`);
 }
 
 export async function getGraphRoot(

@@ -752,6 +752,61 @@ func (s *Store) GetCallees(callerID SymbolID) ([]CalleeInfo, error) {
 	return results, nil
 }
 
+// CallerInfo represents a caller with call site information.
+type CallerInfo struct {
+	Symbol     Symbol   `json:"symbol"`
+	CallKind   CallKind `json:"call_kind"`
+	CallerFile string   `json:"caller_file"`
+	CallerLine int      `json:"caller_line"`
+	Count      int      `json:"count"`
+	Tags       []Tag    `json:"tags,omitempty"`
+}
+
+// GetCallers retrieves all symbols that call the given symbol.
+func (s *Store) GetCallers(calleeID SymbolID) ([]CallerInfo, error) {
+	rows, err := s.db.Query(`
+		SELECT s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
+		       s.file, s.line, COALESCE(s.sig, '') as sig,
+		       ce.call_kind, ce.caller_file, ce.caller_line, ce.count
+		FROM call_edges ce
+		JOIN symbols s ON ce.caller_id = s.id
+		WHERE ce.callee_id = ?
+		ORDER BY s.pkg_path, s.name
+	`, calleeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []CallerInfo
+	for rows.Next() {
+		var c CallerInfo
+		err := rows.Scan(
+			&c.Symbol.ID, &c.Symbol.PkgPath, &c.Symbol.Name, &c.Symbol.Kind,
+			&c.Symbol.RecvType, &c.Symbol.File, &c.Symbol.Line, &c.Symbol.Sig,
+			&c.CallKind, &c.CallerFile, &c.CallerLine, &c.Count,
+		)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fetch tags for each caller
+	for i := range results {
+		tags, err := s.GetSymbolTags(results[i].Symbol.ID)
+		if err != nil {
+			return nil, err
+		}
+		results[i].Tags = tags
+	}
+
+	return results, nil
+}
+
 // GetPackageByPath retrieves a package by its path.
 func (s *Store) GetPackageByPath(pkgPath string) (*Package, error) {
 	pkg := &Package{}
