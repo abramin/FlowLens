@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/abramin/flowlens/internal/index"
 	"github.com/spf13/cobra"
 )
 
@@ -28,8 +30,19 @@ The index command:
 		fmt.Printf("Indexing project at: %s\n", path)
 		fmt.Printf("Config loaded with %d excluded dirs\n", len(cfg.Exclude.Dirs))
 
-		// TODO: Implement indexing pipeline (Slice 2-6)
-		fmt.Println("Indexing not yet implemented")
+		// Run the indexer
+		indexer := index.NewIndexer(cfg, path)
+		result, err := indexer.Run()
+		if err != nil {
+			return fmt.Errorf("indexing failed: %w", err)
+		}
+
+		fmt.Println()
+		fmt.Printf("Indexing complete!\n")
+		fmt.Printf("  Packages: %d\n", result.PackageCount)
+		fmt.Printf("  Symbols:  %d\n", result.SymbolCount)
+		fmt.Printf("  Duration: %s\n", result.Duration.Round(time.Millisecond))
+		fmt.Printf("  Database: %s\n", result.DBPath)
 		return nil
 	},
 }
