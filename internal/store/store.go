@@ -367,3 +367,12 @@ func (b *BatchTx) GetSymbolID(pkgPath, name, recvType string) (SymbolID, error) 
 	}
 	return SymbolID(id), nil
 }
+
+// InsertEntrypoint inserts an entrypoint within the batch and returns its ID.
+func (b *BatchTx) InsertEntrypoint(ep *Entrypoint) error {
+	_, err := b.tx.Exec(`
+		INSERT INTO entrypoints (type, label, symbol_id, meta_json)
+		VALUES (?, ?, ?, ?)
+	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON)
+	return err
+}

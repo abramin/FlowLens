@@ -39,14 +39,19 @@ The index command:
 
 		fmt.Println()
 		fmt.Printf("Indexing complete!\n")
-		fmt.Printf("  Packages:   %d\n", result.PackageCount)
-		fmt.Printf("  Symbols:    %d\n", result.SymbolCount)
-		fmt.Printf("  Call edges: %d\n", result.CallEdgeCount)
-		fmt.Printf("    Static:   %d\n", result.StaticCalls)
-		fmt.Printf("    Defer:    %d\n", result.DeferCalls)
-		fmt.Printf("    Go:       %d\n", result.GoCalls)
-		fmt.Printf("  Duration:   %s\n", result.Duration.Round(time.Millisecond))
-		fmt.Printf("  Database:   %s\n", result.DBPath)
+		fmt.Printf("  Packages:    %d\n", result.PackageCount)
+		fmt.Printf("  Symbols:     %d\n", result.SymbolCount)
+		fmt.Printf("  Call edges:  %d\n", result.CallEdgeCount)
+		fmt.Printf("    Static:    %d\n", result.StaticCalls)
+		fmt.Printf("    Defer:     %d\n", result.DeferCalls)
+		fmt.Printf("    Go:        %d\n", result.GoCalls)
+		fmt.Printf("  Entrypoints: %d\n", result.EntrypointCount)
+		fmt.Printf("    HTTP:      %d\n", result.HTTPEntrypoints)
+		fmt.Printf("    gRPC:      %d\n", result.GRPCEntrypoints)
+		fmt.Printf("    CLI:       %d\n", result.CLIEntrypoints)
+		fmt.Printf("    Main:      %d\n", result.MainEntrypoints)
+		fmt.Printf("  Duration:    %s\n", result.Duration.Round(time.Millisecond))
+		fmt.Printf("  Database:    %s\n", result.DBPath)
 		return nil
 	},
 }

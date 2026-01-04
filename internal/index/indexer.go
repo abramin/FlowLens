@@ -31,15 +31,20 @@ func NewIndexer(cfg *config.Config, projectDir string) *Indexer {
 
 // Result holds the results of an indexing run.
 type Result struct {
-	PackageCount   int
-	SymbolCount    int
-	CallEdgeCount  int
-	StaticCalls    int
-	InterfaceCalls int
-	DeferCalls     int
-	GoCalls        int
-	Duration       time.Duration
-	DBPath         string
+	PackageCount    int
+	SymbolCount     int
+	CallEdgeCount   int
+	StaticCalls     int
+	InterfaceCalls  int
+	DeferCalls      int
+	GoCalls         int
+	EntrypointCount int
+	HTTPEntrypoints int
+	GRPCEntrypoints int
+	CLIEntrypoints  int
+	MainEntrypoints int
+	Duration        time.Duration
+	DBPath          string
 }
 
 // Run executes the indexing pipeline.
@@ -75,6 +80,16 @@ func (idx *Indexer) Run() (*Result, error) {
 		return nil, fmt.Errorf("extracting symbols: %w", err)
 	}
 
+	// Detect entrypoints
+	fmt.Println("Detecting entrypoints...")
+	epResult, err := idx.detectEntrypoints(loader, st)
+	if err != nil {
+		return nil, fmt.Errorf("detecting entrypoints: %w", err)
+	}
+	fmt.Printf("Found %d entrypoints (%d http, %d grpc, %d cli, %d main)\n",
+		epResult.TotalCount, epResult.HTTPCount, epResult.GRPCCount,
+		epResult.CLICount, epResult.MainCount)
+
 	// Build SSA and extract call graph
 	fmt.Println("Building call graph...")
 	cgResult, err := BuildAndExtract(loader, st, func(current, total int) {
@@ -109,14 +124,40 @@ func (idx *Indexer) Run() (*Result, error) {
 	}
 
 	return &Result{
-		PackageCount:   stats.PackageCount,
-		SymbolCount:    stats.SymbolCount,
-		CallEdgeCount:  cgResult.EdgeCount,
-		StaticCalls:    cgResult.StaticCalls,
-		InterfaceCalls: cgResult.InterfaceCalls,
-		DeferCalls:     cgResult.DeferCalls,
-		GoCalls:        cgResult.GoCalls,
-		Duration:       time.Since(start),
-		DBPath:         st.DBPath(),
+		PackageCount:    stats.PackageCount,
+		SymbolCount:     stats.SymbolCount,
+		CallEdgeCount:   cgResult.EdgeCount,
+		StaticCalls:     cgResult.StaticCalls,
+		InterfaceCalls:  cgResult.InterfaceCalls,
+		DeferCalls:      cgResult.DeferCalls,
+		GoCalls:         cgResult.GoCalls,
+		EntrypointCount: epResult.TotalCount,
+		HTTPEntrypoints: epResult.HTTPCount,
+		GRPCEntrypoints: epResult.GRPCCount,
+		CLIEntrypoints:  epResult.CLICount,
+		MainEntrypoints: epResult.MainCount,
+		Duration:        time.Since(start),
+		DBPath:          st.DBPath(),
 	}, nil
+}
+
+// detectEntrypoints runs entrypoint detection within a batch transaction.
+func (idx *Indexer) detectEntrypoints(loader *Loader, st *store.Store) (*DetectResult, error) {
+	batch, err := st.BeginBatch()
+	if err != nil {
+		return nil, fmt.Errorf("starting batch: %w", err)
+	}
+	defer batch.Rollback()
+
+	detector := NewEntrypointDetector(loader)
+	result, err := detector.Detect(batch)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := batch.Commit(); err != nil {
+		return nil, fmt.Errorf("committing batch: %w", err)
+	}
+
+	return result, nil
 }
