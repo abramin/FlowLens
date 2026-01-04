@@ -3,6 +3,7 @@
 
 # Binary (at root only)
 /flowlens
+flowlens
 
 # Go build artifacts
 *.exe
