@@ -19,6 +19,7 @@ const queryClient = new QueryClient({
 function AppContent() {
   const [selectedEntrypoint, setSelectedEntrypoint] = useState<Entrypoint | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [pinnedNodeIds, setPinnedNodeIds] = useState<Set<number>>(new Set());
   const [filters, setFilters] = useState<GraphFilter>({
     hideStdlib: false,
     hideVendors: false,
@@ -46,8 +47,21 @@ function AppContent() {
   const handleSelectEntrypoint = useCallback((entrypoint: Entrypoint) => {
     setSelectedEntrypoint(entrypoint);
     setSelectedNode(null);
+    setPinnedNodeIds(new Set());
     setGraphNodes([]);
     setGraphEdges([]);
+  }, []);
+
+  const handleNodePin = useCallback((nodeId: number) => {
+    setPinnedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
   }, []);
 
   const handleNodeClick = useCallback((nodeId: number) => {
@@ -114,6 +128,9 @@ function AppContent() {
             error={error as Error | null}
             onNodeClick={handleNodeClick}
             onNodeExpand={handleNodeExpand}
+            onNodePin={handleNodePin}
+            selectedNodeId={selectedNode?.id ?? null}
+            pinnedNodeIds={pinnedNodeIds}
             filters={filters}
           />
         </ReactFlowProvider>
