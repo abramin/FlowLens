@@ -54,8 +54,8 @@ func New(cfg Config) (*Server, error) {
 	// Health check
 	mux.HandleFunc("/api/health", s.corsMiddleware(s.handleHealth))
 
-	// Static files (placeholder - will serve embedded UI later)
-	mux.HandleFunc("/", s.handleStatic)
+	// Serve React UI
+	mux.Handle("/", UIHandler())
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
@@ -281,8 +281,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGraph handles graph-related endpoints
-// GET /api/graph/root/:symbolId - get graph starting from symbol
-// GET /api/graph/expand/:symbolId - get callees of a symbol
+// GET /api/graph/root/:symbolId?depth=N&filters={...} - get graph starting from symbol
+// GET /api/graph/expand/:symbolId?depth=N&filters={...} - expand a node
 func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -305,85 +305,51 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 
 	symbolID := store.SymbolID(id)
 
+	// Parse depth parameter (default: 3 for root, 1 for expand)
+	depth := 3
+	if action == "expand" {
+		depth = 1
+	}
+	if depthStr := r.URL.Query().Get("depth"); depthStr != "" {
+		if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
+			depth = d
+		}
+	}
+
+	// Parse filters from query parameter (URL-encoded JSON)
+	filter := DefaultGraphFilter()
+	if filtersStr := r.URL.Query().Get("filters"); filtersStr != "" {
+		if err := json.Unmarshal([]byte(filtersStr), &filter); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid filters JSON")
+			return
+		}
+	}
+
+	// Verify symbol exists
+	if _, err := s.store.GetSymbolByID(symbolID); err != nil {
+		writeError(w, http.StatusNotFound, "symbol not found")
+		return
+	}
+
+	// Build the graph
+	builder := NewGraphBuilder(s.store, filter)
+
+	var response *GraphResponse
 	switch action {
-	case "root", "expand":
-		// Get the root symbol
-		sym, err := s.store.GetSymbolByID(symbolID)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "symbol not found")
-			return
-		}
-
-		tags, _ := s.store.GetSymbolTags(symbolID)
-
-		// Get callees
-		callees, err := s.store.GetCallees(symbolID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to get callees")
-			return
-		}
-
-		response := struct {
-			Symbol  *store.Symbol      `json:"symbol"`
-			Tags    []store.Tag        `json:"tags"`
-			Callees []store.CalleeInfo `json:"callees"`
-		}{
-			Symbol:  sym,
-			Tags:    tags,
-			Callees: callees,
-		}
-
-		writeJSON(w, http.StatusOK, response)
-
+	case "root":
+		response, err = builder.BuildFromRoot(symbolID, depth)
+	case "expand":
+		response, err = builder.Expand(symbolID, depth)
 	default:
 		writeError(w, http.StatusBadRequest, "invalid graph action")
+		return
 	}
+
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build graph")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
-// handleStatic serves the UI static files.
-// For now, returns a placeholder until the UI is built.
-func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
-	// Placeholder HTML until React UI is embedded
-	html := `<!DOCTYPE html>
-<html>
-<head>
-    <title>FlowLens</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               max-width: 800px; margin: 50px auto; padding: 20px; }
-        h1 { color: #333; }
-        .api-list { background: #f5f5f5; padding: 20px; border-radius: 8px; }
-        .api-list a { display: block; margin: 10px 0; color: #0066cc; }
-        pre { background: #f0f0f0; padding: 10px; border-radius: 4px; overflow-x: auto; }
-    </style>
-</head>
-<body>
-    <h1>FlowLens API Server</h1>
-    <p>The React UI is not yet built. Use the API endpoints below:</p>
-    <div class="api-list">
-        <h3>Available Endpoints:</h3>
-        <a href="/api/stats">GET /api/stats</a> - Index statistics
-        <a href="/api/entrypoints">GET /api/entrypoints</a> - List all entrypoints
-        <a href="/api/entrypoints?type=http">GET /api/entrypoints?type=http</a> - HTTP entrypoints only
-        <a href="/api/search?query=main">GET /api/search?query=main</a> - Search symbols
-        <a href="/api/health">GET /api/health</a> - Health check
-    </div>
-    <h3>Example Usage:</h3>
-    <pre>
-# Get all entrypoints
-curl http://localhost:` + strconv.Itoa(s.port) + `/api/entrypoints
-
-# Search for symbols
-curl http://localhost:` + strconv.Itoa(s.port) + `/api/search?query=Handler
-
-# Get symbol details
-curl http://localhost:` + strconv.Itoa(s.port) + `/api/symbol/1
-
-# Get call graph from symbol
-curl http://localhost:` + strconv.Itoa(s.port) + `/api/graph/expand/1
-    </pre>
-</body>
-</html>`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
-}

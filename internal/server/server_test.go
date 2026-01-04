@@ -277,23 +277,72 @@ func TestHandleGraph(t *testing.T) {
 	s.handleGraph(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp struct {
-		Symbol  *store.Symbol      `json:"symbol"`
-		Tags    []store.Tag        `json:"tags"`
-		Callees []store.CalleeInfo `json:"callees"`
-	}
+	var resp GraphResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if resp.Symbol.Name != "GetUser" {
-		t.Errorf("expected symbol 'GetUser', got '%s'", resp.Symbol.Name)
+
+	// Check that we have the root node
+	if len(resp.Nodes) != 1 {
+		t.Errorf("expected 1 node, got %d", len(resp.Nodes))
 	}
-	// No callees in test data
-	if len(resp.Callees) != 0 {
-		t.Errorf("expected 0 callees, got %d", len(resp.Callees))
+	if len(resp.Nodes) > 0 && resp.Nodes[0].Name != "GetUser" {
+		t.Errorf("expected node 'GetUser', got '%s'", resp.Nodes[0].Name)
+	}
+	// No callees in test data means no edges
+	if len(resp.Edges) != 0 {
+		t.Errorf("expected 0 edges, got %d", len(resp.Edges))
+	}
+}
+
+func TestHandleGraphWithDepth(t *testing.T) {
+	s := setupTestServer(t)
+	defer s.store.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/graph/root/1?depth=5", nil)
+	w := httptest.NewRecorder()
+
+	s.handleGraph(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp GraphResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.MaxDepth != 5 {
+		t.Errorf("expected max_depth 5, got %d", resp.MaxDepth)
+	}
+}
+
+func TestHandleGraphWithFilters(t *testing.T) {
+	s := setupTestServer(t)
+	defer s.store.Close()
+
+	filters := `{"hideStdlib":true,"maxDepth":3}`
+	req := httptest.NewRequest(http.MethodGet, "/api/graph/root/1?filters="+filters, nil)
+	w := httptest.NewRecorder()
+
+	s.handleGraph(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp GraphResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Just verify the response is valid
+	if resp.RootID != 1 {
+		t.Errorf("expected root_id 1, got %d", resp.RootID)
 	}
 }
 
