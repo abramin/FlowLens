@@ -512,3 +512,261 @@ func splitTags(s string) []string {
 	}
 	return result
 }
+
+// ============================================================================
+// Query Methods for API
+// ============================================================================
+
+// GetSymbolByID retrieves a symbol by its ID with full details.
+func (s *Store) GetSymbolByID(id SymbolID) (*Symbol, error) {
+	sym := &Symbol{}
+	var recvType sql.NullString
+	err := s.db.QueryRow(`
+		SELECT id, pkg_path, name, kind, recv_type, file, line, COALESCE(sig, '') as sig
+		FROM symbols WHERE id = ?
+	`, id).Scan(&sym.ID, &sym.PkgPath, &sym.Name, &sym.Kind, &recvType, &sym.File, &sym.Line, &sym.Sig)
+	if err != nil {
+		return nil, err
+	}
+	if recvType.Valid {
+		sym.RecvType = recvType.String
+	}
+	return sym, nil
+}
+
+// GetSymbolTags retrieves all tags for a symbol.
+func (s *Store) GetSymbolTags(id SymbolID) ([]Tag, error) {
+	rows, err := s.db.Query(`
+		SELECT symbol_id, tag, COALESCE(reason, '') as reason
+		FROM tags WHERE symbol_id = ?
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []Tag
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.SymbolID, &t.Tag, &t.Reason); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	return tags, rows.Err()
+}
+
+// EntrypointFilter specifies filtering options for GetEntrypoints.
+type EntrypointFilter struct {
+	Type  EntrypointType // Filter by type (empty = all)
+	Query string         // Search in label (empty = all)
+	Limit int            // Max results (0 = no limit)
+}
+
+// EntrypointWithSymbol combines entrypoint with its symbol details.
+type EntrypointWithSymbol struct {
+	Entrypoint
+	Symbol Symbol `json:"symbol"`
+}
+
+// GetEntrypoints retrieves entrypoints with optional filtering.
+func (s *Store) GetEntrypoints(filter EntrypointFilter) ([]EntrypointWithSymbol, error) {
+	query := `
+		SELECT e.id, e.type, e.label, e.symbol_id, COALESCE(e.meta_json, '') as meta_json,
+		       s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
+		       s.file, s.line, COALESCE(s.sig, '') as sig
+		FROM entrypoints e
+		JOIN symbols s ON e.symbol_id = s.id
+		WHERE 1=1
+	`
+	var args []interface{}
+
+	if filter.Type != "" {
+		query += " AND e.type = ?"
+		args = append(args, filter.Type)
+	}
+	if filter.Query != "" {
+		query += " AND e.label LIKE ?"
+		args = append(args, "%"+filter.Query+"%")
+	}
+
+	query += " ORDER BY e.type, e.label"
+
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []EntrypointWithSymbol
+	for rows.Next() {
+		var ep EntrypointWithSymbol
+		err := rows.Scan(
+			&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON,
+			&ep.Symbol.ID, &ep.Symbol.PkgPath, &ep.Symbol.Name, &ep.Symbol.Kind,
+			&ep.Symbol.RecvType, &ep.Symbol.File, &ep.Symbol.Line, &ep.Symbol.Sig,
+		)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, ep)
+	}
+	return results, rows.Err()
+}
+
+// GetEntrypointByID retrieves a single entrypoint with its symbol.
+func (s *Store) GetEntrypointByID(id EntrypointID) (*EntrypointWithSymbol, error) {
+	ep := &EntrypointWithSymbol{}
+	err := s.db.QueryRow(`
+		SELECT e.id, e.type, e.label, e.symbol_id, COALESCE(e.meta_json, '') as meta_json,
+		       s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
+		       s.file, s.line, COALESCE(s.sig, '') as sig
+		FROM entrypoints e
+		JOIN symbols s ON e.symbol_id = s.id
+		WHERE e.id = ?
+	`, id).Scan(
+		&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON,
+		&ep.Symbol.ID, &ep.Symbol.PkgPath, &ep.Symbol.Name, &ep.Symbol.Kind,
+		&ep.Symbol.RecvType, &ep.Symbol.File, &ep.Symbol.Line, &ep.Symbol.Sig,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return ep, nil
+}
+
+// SearchResult represents a symbol search result.
+type SearchResult struct {
+	Symbol Symbol `json:"symbol"`
+	Tags   []Tag  `json:"tags,omitempty"`
+}
+
+// SearchSymbols performs a fuzzy search on symbol names.
+func (s *Store) SearchSymbols(query string, limit int) ([]SearchResult, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// Search by name containing the query (case-insensitive)
+	rows, err := s.db.Query(`
+		SELECT id, pkg_path, name, kind, COALESCE(recv_type, '') as recv_type,
+		       file, line, COALESCE(sig, '') as sig
+		FROM symbols
+		WHERE name LIKE ? OR pkg_path LIKE ?
+		ORDER BY
+			CASE WHEN name = ? THEN 0
+			     WHEN name LIKE ? THEN 1
+			     ELSE 2
+			END,
+			name
+		LIMIT ?
+	`, "%"+query+"%", "%"+query+"%", query, query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var sym Symbol
+		err := rows.Scan(&sym.ID, &sym.PkgPath, &sym.Name, &sym.Kind,
+			&sym.RecvType, &sym.File, &sym.Line, &sym.Sig)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, SearchResult{Symbol: sym})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fetch tags for each result
+	for i := range results {
+		tags, err := s.GetSymbolTags(results[i].Symbol.ID)
+		if err != nil {
+			return nil, err
+		}
+		results[i].Tags = tags
+	}
+
+	return results, nil
+}
+
+// CalleeInfo represents a callee with call site information.
+type CalleeInfo struct {
+	Symbol     Symbol   `json:"symbol"`
+	CallKind   CallKind `json:"call_kind"`
+	CallerFile string   `json:"caller_file"`
+	CallerLine int      `json:"caller_line"`
+	Count      int      `json:"count"`
+	Tags       []Tag    `json:"tags,omitempty"`
+}
+
+// GetCallees retrieves all symbols called by the given symbol.
+func (s *Store) GetCallees(callerID SymbolID) ([]CalleeInfo, error) {
+	rows, err := s.db.Query(`
+		SELECT s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
+		       s.file, s.line, COALESCE(s.sig, '') as sig,
+		       ce.call_kind, ce.caller_file, ce.caller_line, ce.count
+		FROM call_edges ce
+		JOIN symbols s ON ce.callee_id = s.id
+		WHERE ce.caller_id = ?
+		ORDER BY ce.caller_line
+	`, callerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []CalleeInfo
+	for rows.Next() {
+		var c CalleeInfo
+		err := rows.Scan(
+			&c.Symbol.ID, &c.Symbol.PkgPath, &c.Symbol.Name, &c.Symbol.Kind,
+			&c.Symbol.RecvType, &c.Symbol.File, &c.Symbol.Line, &c.Symbol.Sig,
+			&c.CallKind, &c.CallerFile, &c.CallerLine, &c.Count,
+		)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fetch tags for each callee
+	for i := range results {
+		tags, err := s.GetSymbolTags(results[i].Symbol.ID)
+		if err != nil {
+			return nil, err
+		}
+		results[i].Tags = tags
+	}
+
+	return results, nil
+}
+
+// GetPackageByPath retrieves a package by its path.
+func (s *Store) GetPackageByPath(pkgPath string) (*Package, error) {
+	pkg := &Package{}
+	var module, layer sql.NullString
+	err := s.db.QueryRow(`
+		SELECT pkg_path, module, dir, layer FROM packages WHERE pkg_path = ?
+	`, pkgPath).Scan(&pkg.PkgPath, &module, &pkg.Dir, &layer)
+	if err != nil {
+		return nil, err
+	}
+	if module.Valid {
+		pkg.Module = module.String
+	}
+	if layer.Valid {
+		pkg.Layer = layer.String
+	}
+	return pkg, nil
+}
