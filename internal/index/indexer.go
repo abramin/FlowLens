@@ -31,24 +31,26 @@ func NewIndexer(cfg *config.Config, projectDir string) *Indexer {
 
 // Result holds the results of an indexing run.
 type Result struct {
-	PackageCount    int
-	SymbolCount     int
-	CallEdgeCount   int
-	StaticCalls     int
-	InterfaceCalls  int
-	DeferCalls      int
-	GoCalls         int
-	EntrypointCount int
-	HTTPEntrypoints int
-	GRPCEntrypoints int
-	CLIEntrypoints  int
-	MainEntrypoints int
-	TagCount        int
-	IOTags          int
-	LayerTags       int
-	PurityTags      int
-	Duration        time.Duration
-	DBPath          string
+	PackageCount          int
+	SymbolCount           int
+	CallEdgeCount         int
+	StaticCalls           int
+	InterfaceCalls        int
+	DeferCalls            int
+	GoCalls               int
+	EntrypointCount       int
+	HTTPEntrypoints       int
+	HTTPByRouter          int // HTTP handlers discovered via router parsing
+	HTTPBySignature       int // HTTP handlers discovered via signature matching
+	GRPCEntrypoints       int
+	CLIEntrypoints        int
+	MainEntrypoints       int
+	TagCount              int
+	IOTags                int
+	LayerTags             int
+	PurityTags            int
+	Duration              time.Duration
+	DBPath                string
 }
 
 // Run executes the indexing pipeline.
@@ -96,7 +98,7 @@ func (idx *Indexer) Run() (*Result, error) {
 
 	// Build SSA and extract call graph
 	fmt.Println("Building call graph...")
-	cgResult, err := BuildAndExtract(loader, st, func(current, total int) {
+	cgResult, cgBuilder, err := BuildAndExtract(loader, st, func(current, total int) {
 		if current%500 == 0 || current == total {
 			fmt.Printf("  Processing functions: %d/%d\n", current, total)
 		}
@@ -107,6 +109,16 @@ func (idx *Indexer) Run() (*Result, error) {
 	fmt.Printf("Extracted %d call edges (%d static, %d interface, %d defer, %d go)\n",
 		cgResult.EdgeCount, cgResult.StaticCalls, cgResult.InterfaceCalls,
 		cgResult.DeferCalls, cgResult.GoCalls)
+
+	// Discover HTTP handlers by signature (complements router-based detection)
+	fmt.Println("Discovering HTTP handlers by signature...")
+	handlerResult, err := idx.discoverHandlers(loader, cgBuilder, st)
+	if err != nil {
+		return nil, fmt.Errorf("discovering handlers: %w", err)
+	}
+	if handlerResult.TotalCount > 0 {
+		fmt.Printf("Discovered %d additional HTTP handlers by signature\n", handlerResult.TotalCount)
+	}
 
 	// Apply tags
 	fmt.Println("Applying tags...")
@@ -138,24 +150,26 @@ func (idx *Indexer) Run() (*Result, error) {
 	}
 
 	return &Result{
-		PackageCount:    stats.PackageCount,
-		SymbolCount:     stats.SymbolCount,
-		CallEdgeCount:   cgResult.EdgeCount,
-		StaticCalls:     cgResult.StaticCalls,
-		InterfaceCalls:  cgResult.InterfaceCalls,
-		DeferCalls:      cgResult.DeferCalls,
-		GoCalls:         cgResult.GoCalls,
-		EntrypointCount: epResult.TotalCount,
-		HTTPEntrypoints: epResult.HTTPCount,
-		GRPCEntrypoints: epResult.GRPCCount,
-		CLIEntrypoints:  epResult.CLICount,
-		MainEntrypoints: epResult.MainCount,
-		TagCount:        tagResult.TotalTags,
-		IOTags:          tagResult.IOTags,
-		LayerTags:       tagResult.LayerTags,
-		PurityTags:      tagResult.PurityTags,
-		Duration:        time.Since(start),
-		DBPath:          st.DBPath(),
+		PackageCount:          stats.PackageCount,
+		SymbolCount:           stats.SymbolCount,
+		CallEdgeCount:         cgResult.EdgeCount,
+		StaticCalls:           cgResult.StaticCalls,
+		InterfaceCalls:        cgResult.InterfaceCalls,
+		DeferCalls:            cgResult.DeferCalls,
+		GoCalls:               cgResult.GoCalls,
+		EntrypointCount:       epResult.TotalCount + handlerResult.TotalCount,
+		HTTPEntrypoints:       epResult.HTTPCount + handlerResult.TotalCount,
+		HTTPByRouter:          epResult.HTTPCount,
+		HTTPBySignature:       handlerResult.TotalCount,
+		GRPCEntrypoints:       epResult.GRPCCount,
+		CLIEntrypoints:        epResult.CLICount,
+		MainEntrypoints:       epResult.MainCount,
+		TagCount:              tagResult.TotalTags,
+		IOTags:                tagResult.IOTags,
+		LayerTags:             tagResult.LayerTags,
+		PurityTags:            tagResult.PurityTags,
+		Duration:              time.Since(start),
+		DBPath:                st.DBPath(),
 	}, nil
 }
 
@@ -169,6 +183,27 @@ func (idx *Indexer) detectEntrypoints(loader *Loader, st *store.Store) (*DetectR
 
 	detector := NewEntrypointDetector(loader)
 	result, err := detector.Detect(batch)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := batch.Commit(); err != nil {
+		return nil, fmt.Errorf("committing batch: %w", err)
+	}
+
+	return result, nil
+}
+
+// discoverHandlers runs signature-based HTTP handler discovery.
+func (idx *Indexer) discoverHandlers(loader *Loader, cgBuilder *CallGraphBuilder, st *store.Store) (*DiscoverResult, error) {
+	batch, err := st.BeginBatch()
+	if err != nil {
+		return nil, fmt.Errorf("starting batch: %w", err)
+	}
+	defer batch.Rollback()
+
+	discovery := NewHandlerDiscovery(loader, cgBuilder.GetSSAProgram())
+	result, err := discovery.Discover(batch)
 	if err != nil {
 		return nil, err
 	}

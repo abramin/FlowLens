@@ -1,24 +1,63 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getEntrypoints } from '../api';
-import type { Entrypoint, EntrypointType, HTTPMeta, GRPCMeta, CLIMeta } from '../types';
-
-const TABS: { type: EntrypointType | 'all'; label: string }[] = [
-  { type: 'all', label: 'All' },
-  { type: 'http', label: 'HTTP' },
-  { type: 'grpc', label: 'gRPC' },
-  { type: 'cli', label: 'CLI' },
-  { type: 'main', label: 'Main' },
-];
+import type { Entrypoint, HTTPMeta } from '../types';
 
 interface EntrypointsPanelProps {
   selectedId: number | null;
   onSelect: (entrypoint: Entrypoint) => void;
 }
 
+// Group entrypoints by path prefix (e.g., api/auth, api/users)
+function groupEntrypoints(entrypoints: Entrypoint[]): Map<string, Entrypoint[]> {
+  const groups = new Map<string, Entrypoint[]>();
+
+  for (const ep of entrypoints) {
+    let groupKey = 'other';
+
+    if (ep.type === 'http' && ep.meta_json) {
+      try {
+        const meta = JSON.parse(ep.meta_json) as HTTPMeta;
+        // Extract first two path segments (e.g., /api/auth/login -> api/auth)
+        const pathParts = meta.path.split('/').filter(Boolean);
+        if (pathParts.length >= 2) {
+          groupKey = `${pathParts[0]}/${pathParts[1]}`;
+        } else if (pathParts.length === 1) {
+          groupKey = pathParts[0];
+        }
+      } catch {
+        // Use package-based grouping for non-HTTP
+      }
+    } else if (ep.type === 'grpc') {
+      groupKey = 'grpc';
+    } else if (ep.type === 'cli') {
+      groupKey = 'cli';
+    } else if (ep.type === 'main') {
+      groupKey = 'main';
+    } else {
+      // Group by package for handlers without clear path
+      const pkgParts = ep.symbol.pkg_path.split('/');
+      const lastPart = pkgParts[pkgParts.length - 1];
+      if (lastPart === 'handler' || lastPart === 'handlers') {
+        const secondLast = pkgParts[pkgParts.length - 2];
+        groupKey = secondLast || lastPart;
+      } else {
+        groupKey = lastPart;
+      }
+    }
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, []);
+    }
+    groups.get(groupKey)!.push(ep);
+  }
+
+  return groups;
+}
+
 export function EntrypointsPanel({ selectedId, onSelect }: EntrypointsPanelProps) {
-  const [activeTab, setActiveTab] = useState<EntrypointType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   const { data: entrypoints = [], isLoading, error } = useQuery({
     queryKey: ['entrypoints'],
@@ -27,68 +66,60 @@ export function EntrypointsPanel({ selectedId, onSelect }: EntrypointsPanelProps
   });
 
   const filteredEntrypoints = useMemo(() => {
-    let filtered = entrypoints;
+    if (!searchQuery.trim()) return entrypoints;
+    const query = searchQuery.toLowerCase();
+    return entrypoints.filter((ep) =>
+      ep.label.toLowerCase().includes(query) ||
+      ep.symbol.name.toLowerCase().includes(query)
+    );
+  }, [entrypoints, searchQuery]);
 
-    // Filter by tab
-    if (activeTab !== 'all') {
-      filtered = filtered.filter((ep) => ep.type === activeTab);
-    }
+  const groupedEntrypoints = useMemo(() => {
+    return groupEntrypoints(filteredEntrypoints);
+  }, [filteredEntrypoints]);
 
-    // Filter by search query
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter((ep) => ep.label.toLowerCase().includes(query));
-    }
+  const toggleGroup = (groupKey: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
 
-    return filtered;
-  }, [entrypoints, activeTab, searchQuery]);
-
-  // Count by type for tab badges
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { all: entrypoints.length };
-    for (const ep of entrypoints) {
-      c[ep.type] = (c[ep.type] || 0) + 1;
-    }
-    return c;
-  }, [entrypoints]);
+  // Sort groups alphabetically
+  const sortedGroups = useMemo(() => {
+    return Array.from(groupedEntrypoints.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [groupedEntrypoints]);
 
   return (
-    <div className="flex flex-col h-full bg-gray-900 text-gray-100">
+    <div className="flex flex-col h-full bg-[#0d1117] text-gray-100">
       {/* Header */}
-      <div className="p-3 border-b border-gray-700">
-        <h2 className="text-sm font-semibold text-gray-300 mb-2">Entrypoints</h2>
-        <input
-          type="text"
-          placeholder="Search..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-blue-500 text-gray-100 placeholder-gray-500"
-        />
-      </div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-gray-700 overflow-x-auto">
-        {TABS.map((tab) => (
-          <button
-            key={tab.type}
-            onClick={() => setActiveTab(tab.type)}
-            className={`px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors ${
-              activeTab === tab.type
-                ? 'text-blue-400 border-b-2 border-blue-400 bg-gray-800'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
-            }`}
+      <div className="p-4 border-b border-gray-800/50">
+        <h2 className="text-sm font-semibold text-gray-200 mb-3">Entry Points</h2>
+        <div className="relative">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
           >
-            {tab.label}
-            {counts[tab.type] > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-gray-700 rounded-full">
-                {counts[tab.type]}
-              </span>
-            )}
-          </button>
-        ))}
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search handlers..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-3 py-2 text-sm bg-[#161b22] border border-gray-800 rounded-md focus:outline-none focus:border-blue-500 text-gray-200 placeholder-gray-600"
+          />
+        </div>
       </div>
 
-      {/* Entrypoint List */}
+      {/* Entrypoint Groups */}
       <div className="flex-1 overflow-y-auto">
         {isLoading && (
           <div className="p-4 text-center text-gray-500">Loading...</div>
@@ -98,20 +129,80 @@ export function EntrypointsPanel({ selectedId, onSelect }: EntrypointsPanelProps
             Error: {error instanceof Error ? error.message : 'Unknown error'}
           </div>
         )}
-        {!isLoading && !error && filteredEntrypoints.length === 0 && (
-          <div className="p-4 text-center text-gray-500">
+        {!isLoading && !error && sortedGroups.length === 0 && (
+          <div className="p-4 text-center text-gray-600">
             {searchQuery ? 'No matches found' : 'No entrypoints'}
           </div>
         )}
-        {filteredEntrypoints.map((ep) => (
-          <EntrypointItem
-            key={ep.id}
-            entrypoint={ep}
-            selected={selectedId === ep.symbol_id}
-            onClick={() => onSelect(ep)}
+
+        {sortedGroups.map(([groupKey, entries]) => (
+          <EntrypointGroup
+            key={groupKey}
+            groupKey={groupKey}
+            entries={entries}
+            selectedId={selectedId}
+            isCollapsed={collapsedGroups.has(groupKey)}
+            onToggle={() => toggleGroup(groupKey)}
+            onSelect={onSelect}
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+interface EntrypointGroupProps {
+  groupKey: string;
+  entries: Entrypoint[];
+  selectedId: number | null;
+  isCollapsed: boolean;
+  onToggle: () => void;
+  onSelect: (entrypoint: Entrypoint) => void;
+}
+
+function EntrypointGroup({
+  groupKey,
+  entries,
+  selectedId,
+  isCollapsed,
+  onToggle,
+  onSelect
+}: EntrypointGroupProps) {
+  return (
+    <div className="border-b border-gray-800/30">
+      {/* Group header */}
+      <button
+        onClick={onToggle}
+        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-[#161b22] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <svg
+            className={`w-3 h-3 text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+            fill="currentColor"
+            viewBox="0 0 20 20"
+          >
+            <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+          </svg>
+          <span className="text-sm text-gray-300 font-medium">{groupKey}</span>
+        </div>
+        <span className="text-xs text-gray-600 bg-gray-800/50 px-2 py-0.5 rounded">
+          {entries.length}
+        </span>
+      </button>
+
+      {/* Group entries */}
+      {!isCollapsed && (
+        <div className="pb-1">
+          {entries.map((ep) => (
+            <EntrypointItem
+              key={ep.id}
+              entrypoint={ep}
+              selected={selectedId === ep.symbol_id}
+              onClick={() => onSelect(ep)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -123,59 +214,19 @@ interface EntrypointItemProps {
 }
 
 function EntrypointItem({ entrypoint, selected, onClick }: EntrypointItemProps) {
-  const { label, badgeColor } = formatEntrypoint(entrypoint);
+  // Get method name from the handler
+  const methodName = entrypoint.label;
 
   return (
     <button
       onClick={onClick}
-      className={`w-full px-3 py-2 text-left border-b border-gray-800 transition-colors ${
+      className={`w-full pl-8 pr-4 py-2 text-left transition-colors ${
         selected
-          ? 'bg-blue-900/30 border-l-2 border-l-blue-400'
-          : 'hover:bg-gray-800'
+          ? 'bg-[#1e3a5f] border-l-2 border-l-blue-500'
+          : 'hover:bg-[#161b22] border-l-2 border-l-transparent'
       }`}
     >
-      <div className="flex items-center gap-2">
-        <span
-          className={`px-1.5 py-0.5 text-xs font-medium rounded ${badgeColor}`}
-        >
-          {entrypoint.type.toUpperCase()}
-        </span>
-        <span className="text-sm text-gray-100 truncate">{label}</span>
-      </div>
-      <div className="mt-1 text-xs text-gray-500 truncate">
-        {entrypoint.symbol.pkg_path}
-      </div>
+      <div className="text-sm text-gray-300 truncate">{methodName}</div>
     </button>
   );
-}
-
-function formatEntrypoint(ep: Entrypoint): { label: string; badgeColor: string } {
-  const badgeColors: Record<EntrypointType, string> = {
-    http: 'bg-green-900 text-green-300',
-    grpc: 'bg-purple-900 text-purple-300',
-    cli: 'bg-yellow-900 text-yellow-300',
-    main: 'bg-blue-900 text-blue-300',
-  };
-
-  let label = ep.label;
-
-  if (ep.meta_json) {
-    try {
-      const meta = JSON.parse(ep.meta_json);
-      if (ep.type === 'http') {
-        const httpMeta = meta as HTTPMeta;
-        label = `${httpMeta.method} ${httpMeta.path}`;
-      } else if (ep.type === 'grpc') {
-        const grpcMeta = meta as GRPCMeta;
-        label = `${grpcMeta.service}.${grpcMeta.method}`;
-      } else if (ep.type === 'cli') {
-        const cliMeta = meta as CLIMeta;
-        label = cliMeta.command;
-      }
-    } catch {
-      // Use default label
-    }
-  }
-
-  return { label, badgeColor: badgeColors[ep.type] };
 }

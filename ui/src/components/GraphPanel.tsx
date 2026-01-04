@@ -14,6 +14,9 @@ import {
 import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { GraphNode, GraphEdge, GraphFilter } from '../types';
+import type { BreadcrumbItem } from '../hooks/useBreadcrumbs';
+import { Toolbar } from './Toolbar';
+import { Breadcrumbs } from './Breadcrumbs';
 
 interface GraphPanelProps {
   nodes: GraphNode[];
@@ -27,6 +30,12 @@ interface GraphPanelProps {
   selectedNodeId: number | null;
   pinnedNodeIds: Set<number>;
   filters: GraphFilter;
+  breadcrumbs: BreadcrumbItem[];
+  onBreadcrumbNavigate: (nodeId: number) => void;
+  onClearFocus: () => void;
+  onCopyLink: () => Promise<boolean>;
+  onExportSVG: () => Promise<void>;
+  onExportPNG: () => Promise<void>;
 }
 
 // Colors for different node states
@@ -38,6 +47,24 @@ const NODE_COLORS = {
   pinned: { bg: '#059669', border: '#10b981', text: '#ffffff' },
   default: { bg: '#1f2937', border: '#374151', text: '#9ca3af' },
 };
+
+// Layer badge colors (prominent badges like in design)
+const LAYER_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
+  handler: { bg: '#8b5cf6', text: '#ffffff' },   // Purple
+  service: { bg: '#10b981', text: '#ffffff' },   // Green
+  store: { bg: '#06b6d4', text: '#ffffff' },     // Cyan/Teal
+  domain: { bg: '#ec4899', text: '#ffffff' },    // Pink
+};
+
+// Get the layer from tags
+function getNodeLayer(tags: string[]): string | null {
+  for (const tag of tags) {
+    if (tag.startsWith('layer:')) {
+      return tag.split(':')[1];
+    }
+  }
+  return null;
+}
 
 // Tag colors for badges
 const TAG_COLORS: Record<string, string> = {
@@ -76,6 +103,7 @@ interface CustomNodeProps {
     isRoot: boolean;
     isSelected: boolean;
     isPinned: boolean;
+    expandCount: number;
     onExpand: () => void;
     onClick: (e: React.MouseEvent) => void;
   };
@@ -83,21 +111,26 @@ interface CustomNodeProps {
 
 function CustomNode({ data }: CustomNodeProps) {
   const colors = getNodeColor(data.node, data.isRoot, data.isSelected, data.isPinned);
-  const visibleTags = data.node.tags.slice(0, 3); // Show max 3 tags
-  const hasMoreTags = data.node.tags.length > 3;
+  const layer = getNodeLayer(data.node.tags);
+  const layerColors = layer ? LAYER_BADGE_COLORS[layer] : null;
+
+  // Filter out layer tags from visible tags (we show layer as prominent badge)
+  const nonLayerTags = data.node.tags.filter(t => !t.startsWith('layer:'));
+  const visibleTags = nonLayerTags.slice(0, 2); // Show max 2 non-layer tags
+  const hasMoreTags = nonLayerTags.length > 2;
 
   return (
     <div
-      className={`px-3 py-2 rounded-lg shadow-lg cursor-pointer transition-all duration-200 hover:scale-105 ${
+      className={`relative px-3 py-2 rounded-lg shadow-lg cursor-pointer transition-all duration-200 hover:scale-105 ${
         data.isSelected ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-gray-900' : ''
       } ${data.isPinned ? 'ring-2 ring-emerald-400' : ''}`}
       style={{
         backgroundColor: colors.bg,
         borderWidth: 2,
-        borderColor: colors.border,
+        borderColor: layerColors ? layerColors.bg : colors.border,
         borderStyle: 'solid',
-        minWidth: 140,
-        maxWidth: 220,
+        minWidth: 180,
+        maxWidth: 260,
       }}
       onClick={data.onClick}
       onDoubleClick={(e) => {
@@ -106,7 +139,27 @@ function CustomNode({ data }: CustomNodeProps) {
       }}
     >
       <Handle type="target" position={Position.Top} className="!bg-gray-500" />
-      <div className="text-center">
+
+      {/* Layer badge - prominent, positioned at top right */}
+      {layerColors && (
+        <div
+          className="absolute -top-0 -right-0 px-2.5 py-1 text-[10px] font-semibold rounded-tr-md rounded-bl-md uppercase tracking-wide"
+          style={{ backgroundColor: layerColors.bg, color: layerColors.text }}
+        >
+          {layer}
+        </div>
+      )}
+
+      {/* Expand count indicator - positioned at right side */}
+      {data.expandCount > 0 && !data.node.expanded && (
+        <div className="absolute -right-2 top-1/2 -translate-y-1/2 flex flex-col gap-0.5">
+          <div className="px-1.5 py-0.5 text-[9px] font-medium bg-gray-700 text-gray-300 rounded-full border border-gray-600">
+            ↓ +{data.expandCount}
+          </div>
+        </div>
+      )}
+
+      <div className="text-center pt-1">
         {/* Status indicators */}
         <div className="flex justify-center gap-1 mb-1">
           {data.isPinned && (
@@ -115,18 +168,15 @@ function CustomNode({ data }: CustomNodeProps) {
           {data.node.expanded && (
             <span className="text-[10px] text-gray-400" title="Expanded">▼</span>
           )}
-          {!data.node.expanded && data.node.depth > 0 && (
-            <span className="text-[10px] text-gray-500" title="Collapsed - Double-click to expand">▶</span>
-          )}
         </div>
 
         {/* Function name */}
         <div
-          className="text-xs font-medium truncate"
+          className="text-sm font-medium truncate"
           style={{ color: colors.text }}
           title={data.node.recv_type ? `(${data.node.recv_type}).${data.node.name}` : data.node.name}
         >
-          {data.node.recv_type ? `(${data.node.recv_type}).` : ''}
+          {data.node.recv_type ? `(*${data.node.recv_type}).` : ''}
           {data.node.name}
         </div>
 
@@ -135,13 +185,13 @@ function CustomNode({ data }: CustomNodeProps) {
           {data.node.pkg_path.split('/').pop()}
         </div>
 
-        {/* Tags */}
+        {/* Non-layer tags (IO, pure/impure, etc.) */}
         {visibleTags.length > 0 && (
-          <div className="mt-1 flex flex-wrap justify-center gap-0.5">
+          <div className="mt-1.5 flex flex-wrap justify-center gap-0.5">
             {visibleTags.map((tag) => (
               <span
                 key={tag}
-                className={`px-1 py-0.5 text-[9px] rounded ${getTagColor(tag)}`}
+                className={`px-1.5 py-0.5 text-[9px] rounded ${getTagColor(tag)}`}
                 title={tag}
               >
                 {tag.includes(':') ? tag.split(':')[1] : tag}
@@ -149,7 +199,7 @@ function CustomNode({ data }: CustomNodeProps) {
             ))}
             {hasMoreTags && (
               <span className="px-1 py-0.5 text-[9px] bg-gray-600 text-gray-300 rounded">
-                +{data.node.tags.length - 3}
+                +{nonLayerTags.length - 2}
               </span>
             )}
           </div>
@@ -175,6 +225,12 @@ export function GraphPanel({
   onNodePin,
   selectedNodeId,
   pinnedNodeIds,
+  breadcrumbs,
+  onBreadcrumbNavigate,
+  onClearFocus,
+  onCopyLink,
+  onExportSVG,
+  onExportPNG,
 }: GraphPanelProps) {
   const { fitView } = useReactFlow();
 
@@ -263,6 +319,8 @@ export function GraphPanel({
 
     return nodes.map((node): Node => {
       const pos = positions.get(node.id) || { x: 0, y: 0 };
+      // Count children (outgoing edges) for this node
+      const expandCount = childrenMap.get(node.id)?.length || 0;
       return {
         id: String(node.id),
         type: 'custom',
@@ -273,6 +331,7 @@ export function GraphPanel({
           isRoot: node.id === rootId,
           isSelected: node.id === selectedNodeId,
           isPinned: pinnedNodeIds.has(node.id),
+          expandCount: node.expanded ? 0 : expandCount, // Only show count if not expanded
           onExpand: () => onNodeExpand(node.id),
           onClick: (e: React.MouseEvent) => handleNodeClick(node.id, e),
         },
@@ -332,33 +391,65 @@ export function GraphPanel({
     setRfEdges(flowEdges);
   }, [flowNodes, flowEdges, setRfNodes, setRfEdges]);
 
+  const hasGraph = rootId !== null;
+
   if (error) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-900 text-red-400">
-        Error: {error.message}
+      <div className="h-full flex flex-col bg-gray-900">
+        <Toolbar
+          onCopyLink={onCopyLink}
+          onExportSVG={onExportSVG}
+          onExportPNG={onExportPNG}
+          disabled={true}
+        />
+        <div className="flex-1 flex items-center justify-center text-red-400">
+          Error: {error.message}
+        </div>
       </div>
     );
   }
 
   if (!rootId && !isLoading) {
     return (
-      <div className="h-full flex items-center justify-center bg-gray-900 text-gray-500">
-        <div className="text-center">
-          <div className="text-lg mb-2">Select an entrypoint</div>
-          <div className="text-sm">Choose an entrypoint from the left panel to view its call graph</div>
+      <div className="h-full flex flex-col bg-gray-900">
+        <Toolbar
+          onCopyLink={onCopyLink}
+          onExportSVG={onExportSVG}
+          onExportPNG={onExportPNG}
+          disabled={true}
+        />
+        <div className="flex-1 flex items-center justify-center text-gray-500">
+          <div className="text-center">
+            <div className="text-lg mb-2">Select an entrypoint</div>
+            <div className="text-sm">Choose an entrypoint from the left panel to view its call graph</div>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="h-full relative bg-gray-900">
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 z-10">
-          <div className="text-gray-400">Loading graph...</div>
-        </div>
+    <div className="h-full flex flex-col bg-gray-900">
+      <Toolbar
+        onCopyLink={onCopyLink}
+        onExportSVG={onExportSVG}
+        onExportPNG={onExportPNG}
+        disabled={!hasGraph}
+      />
+      {breadcrumbs.length > 0 && (
+        <Breadcrumbs
+          items={breadcrumbs}
+          onNavigate={onBreadcrumbNavigate}
+          onClearFocus={onClearFocus}
+        />
       )}
-      <ReactFlow
+      <div className="flex-1 relative">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 z-10">
+            <div className="text-gray-400">Loading graph...</div>
+          </div>
+        )}
+        <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
         onNodesChange={onNodesChange}
@@ -407,6 +498,7 @@ export function GraphPanel({
         >
           Fit View
         </button>
+      </div>
       </div>
     </div>
   );

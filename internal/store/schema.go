@@ -51,16 +51,18 @@ CREATE INDEX IF NOT EXISTS idx_call_edges_kind ON call_edges(call_kind);
 
 -- Entrypoints table
 CREATE TABLE IF NOT EXISTS entrypoints (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    type      TEXT NOT NULL,
-    label     TEXT NOT NULL,
-    symbol_id INTEGER NOT NULL,
-    meta_json TEXT,
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    type             TEXT NOT NULL,
+    label            TEXT NOT NULL,
+    symbol_id        INTEGER NOT NULL,
+    meta_json        TEXT,
+    discovery_method TEXT DEFAULT 'router',
     FOREIGN KEY (symbol_id) REFERENCES symbols(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_entrypoints_type ON entrypoints(type);
 CREATE INDEX IF NOT EXISTS idx_entrypoints_symbol ON entrypoints(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_entrypoints_discovery ON entrypoints(discovery_method);
 
 -- Tags table
 CREATE TABLE IF NOT EXISTS tags (

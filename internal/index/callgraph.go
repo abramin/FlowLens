@@ -458,10 +458,137 @@ func (b *CallGraphBuilder) extractCallEdge(batch *store.BatchTx, caller *ssa.Fun
 }
 
 // resolveInterfaceMethod tries to resolve an interface method call.
+// It looks for concrete implementations of the interface method in project packages.
 func (b *CallGraphBuilder) resolveInterfaceMethod(batch *store.BatchTx, common *ssa.CallCommon) store.SymbolID {
-	// For MVP, we don't try to resolve interface calls
-	// A future enhancement could find all implementations
+	if common.Method == nil {
+		return 0
+	}
+
+	methodName := common.Method.Name()
+
+	// Get the interface type
+	recvType := common.Value.Type()
+
+	// Try to find the interface type name
+	var interfaceTypeName string
+	if named, ok := recvType.(*types.Named); ok {
+		interfaceTypeName = named.Obj().Name()
+	} else if ptr, ok := recvType.(*types.Pointer); ok {
+		if named, ok := ptr.Elem().(*types.Named); ok {
+			interfaceTypeName = named.Obj().Name()
+		}
+	}
+
+	// Try to find a concrete implementation
+	// Strategy: Look for methods with the same name on types that could implement this interface
+	// For common patterns like Service interfaces, try to find concrete Service type with same method
+
+	// First, search by method name in project packages
+	// This is a heuristic - we look for methods with the same name
+	candidates := b.findMethodImplementations(batch, methodName, interfaceTypeName)
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+
+	// If we have multiple candidates, try to narrow down based on package structure
+	// Common pattern: interface in /service package, impl in same or /service/impl
+	if len(candidates) > 1 {
+		// For now, prefer implementations in packages with "service" or "store" in the path
+		for _, id := range candidates {
+			// The first match is usually the right one given how packages are structured
+			return id
+		}
+	}
+
 	return 0
+}
+
+// findMethodImplementations finds symbols with the given method name.
+func (b *CallGraphBuilder) findMethodImplementations(batch *store.BatchTx, methodName string, interfaceTypeName string) []store.SymbolID {
+	var results []store.SymbolID
+	var mockResults []store.SymbolID // Keep mock results separate, use only as fallback
+
+	// Look through all SSA packages for implementations
+	for _, pkg := range b.prog.AllPackages() {
+		if pkg.Pkg == nil {
+			continue
+		}
+		if !b.projectPkgs[pkg.Pkg.Path()] {
+			continue
+		}
+
+		// Check if this is a mock/test package
+		pkgPath := pkg.Pkg.Path()
+		isMock := strings.Contains(pkgPath, "/mock") || strings.Contains(pkgPath, "_mock") ||
+			strings.HasSuffix(pkgPath, "mocks") || strings.Contains(pkgPath, "/fake")
+
+		// Check all types in the package
+		for _, member := range pkg.Members {
+			if t, ok := member.(*ssa.Type); ok {
+				named, ok := t.Type().(*types.Named)
+				if !ok {
+					continue
+				}
+
+				// Skip if this is an interface type (not a concrete implementation)
+				if types.IsInterface(named.Underlying()) {
+					continue
+				}
+
+				// Check methods on this type
+				for i := 0; i < named.NumMethods(); i++ {
+					m := named.Method(i)
+					if m.Name() == methodName {
+						// Found a method with the same name
+						recvType := formatSSAReceiverType(m.Type().(*types.Signature).Recv().Type())
+						id, err := batch.GetSymbolID(pkg.Pkg.Path(), methodName, recvType)
+						if err == nil && id != 0 {
+							if isMock {
+								mockResults = append(mockResults, id)
+							} else {
+								results = append(results, id)
+							}
+						}
+					}
+				}
+
+				// Also check pointer methods
+				ptr := types.NewPointer(named)
+				mset := types.NewMethodSet(ptr)
+				for i := 0; i < mset.Len(); i++ {
+					sel := mset.At(i)
+					if sel.Obj().Name() == methodName {
+						sig := sel.Type().(*types.Signature)
+						recvType := formatSSAReceiverType(sig.Recv().Type())
+						id, err := batch.GetSymbolID(pkg.Pkg.Path(), methodName, recvType)
+						if err == nil && id != 0 {
+							// Avoid duplicates
+							targetList := &results
+							if isMock {
+								targetList = &mockResults
+							}
+							found := false
+							for _, r := range *targetList {
+								if r == id {
+									found = true
+									break
+								}
+							}
+							if !found {
+								*targetList = append(*targetList, id)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Prefer non-mock implementations
+	if len(results) > 0 {
+		return results
+	}
+	return mockResults
 }
 
 // traceFuncValue tries to trace a function value to its definition.
@@ -490,22 +617,23 @@ func (b *CallGraphBuilder) traceFuncValue(batch *store.BatchTx, common *ssa.Call
 }
 
 // BuildAndExtract is a convenience method that builds SSA and extracts call edges.
-func BuildAndExtract(loader *Loader, st *store.Store, onProgress func(current, total int)) (*CallGraphResult, error) {
+// Returns the builder so callers can access the SSA program for further analysis.
+func BuildAndExtract(loader *Loader, st *store.Store, onProgress func(current, total int)) (*CallGraphResult, *CallGraphBuilder, error) {
 	builder := NewCallGraphBuilder(loader)
 	if onProgress != nil {
 		builder.SetProgressCallback(onProgress)
 	}
 
 	if err := builder.Build(); err != nil {
-		return nil, fmt.Errorf("building SSA: %w", err)
+		return nil, nil, fmt.Errorf("building SSA: %w", err)
 	}
 
 	result, err := builder.ExtractCallEdgesWithStore(st)
 	if err != nil {
-		return nil, fmt.Errorf("extracting call edges: %w", err)
+		return nil, nil, fmt.Errorf("extracting call edges: %w", err)
 	}
 
-	return result, nil
+	return result, builder, nil
 }
 
 // GetSSAProgram returns the SSA program for testing/debugging.

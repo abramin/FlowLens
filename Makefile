@@ -13,7 +13,8 @@ help:
 	@echo "  make clean      Remove build artifacts"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make index PATH=/path/to/go/project"
+	@echo "  make index TARGET=/path/to/go/project"
+	@echo "  make run TARGET=/path/to/go/project"
 	@echo "  make dev"
 
 # Build everything
@@ -41,15 +42,15 @@ dev: build-cli
 	./flowlens ui & \
 	cd ui && npm run dev
 
-# Build and run production server
+# Build and run production server (use TARGET= to specify project path)
 run: build
 	@echo "Starting FlowLens..."
 	@echo "Open http://localhost:8080 in your browser"
-	./flowlens ui
+	./flowlens ui $(if $(TARGET),$(TARGET),.)
 
-# Index a Go project (use PATH= to specify project path)
+# Index a Go project (use TARGET= to specify project path)
 index: build-cli
-	./flowlens index $(if $(PATH),$(PATH),.)
+	./flowlens index $(if $(TARGET),$(TARGET),.)
 
 # Run tests
 test:

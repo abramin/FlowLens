@@ -68,6 +68,8 @@ export interface GraphFilter {
   stopAtPackagePrefix?: string[];
   maxDepth?: number;
   noisePackages?: string[];
+  collapseWiring?: boolean;  // Collapse wiring/config functions (default ON)
+  hideCmdMain?: boolean;     // Hide cmd/* packages (default ON)
 }
 
 export interface Stats {
@@ -130,6 +132,63 @@ export interface SymbolDetails {
   callers: CallInfo[];
 }
 
+// Call Spine Types
+export interface BranchBadge {
+  call_count: number;
+  collapsed_ids: number[];
+  labels: string[];
+}
+
+export interface SpineNode {
+  id: number;
+  name: string;
+  pkg_path: string;
+  recv_type?: string;
+  file: string;
+  line: number;
+  tags: string[];
+  depth: number;
+  is_main_path: boolean;
+  branch_badge?: BranchBadge;
+  layer?: string;
+}
+
+export interface SpineResponse {
+  nodes: SpineNode[];
+  main_path: number[];
+  total_nodes: number;
+  collapsed_count: number;
+}
+
+// CFG Types
+export type CFGViewMode = 'summary' | 'detail';
+
+export interface InstructionInfo {
+  index: number;
+  op: string;
+  text: string;
+  callee_id?: number;
+}
+
+export interface BasicBlockInfo {
+  index: number;
+  instructions: InstructionInfo[];
+  successors: number[];
+  predecessors: number[];
+  is_entry: boolean;
+  is_exit: boolean;
+  branch_cond?: string;
+}
+
+export interface CFGInfo {
+  symbol_id: number;
+  name: string;
+  signature?: string;
+  blocks: BasicBlockInfo[];
+  entry_block: number;
+  exit_blocks: number[];
+}
+
 // Filter presets
 export type FilterPreset = 'default' | 'deep-dive' | 'high-level';
 
@@ -139,17 +198,23 @@ export const FILTER_PRESETS: Record<FilterPreset, GraphFilter> = {
     hideVendors: false,
     stopAtIO: false,
     maxDepth: 6,
+    collapseWiring: true,  // ON by default for cleaner graphs
+    hideCmdMain: true,     // ON by default
   },
   'deep-dive': {
     hideStdlib: false,
     hideVendors: false,
     stopAtIO: false,
     maxDepth: 10,
+    collapseWiring: false, // Show everything
+    hideCmdMain: false,
   },
   'high-level': {
     hideStdlib: true,
     hideVendors: true,
     stopAtIO: true,
     maxDepth: 3,
+    collapseWiring: true,
+    hideCmdMain: true,
   },
 };

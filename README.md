@@ -9,7 +9,7 @@ A Go code analysis tool that generates forward call graphs from entrypoints (HTT
 make install
 
 # Index a Go project
-make index PATH=/path/to/your/go/project
+make index TARGET=/path/to/your/go/project
 
 # Start the UI
 make run

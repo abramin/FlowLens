@@ -14,16 +14,20 @@ type GraphFilter struct {
 	StopAtPackagePrefix []string `json:"stopAtPackagePrefix"`
 	MaxDepth            int      `json:"maxDepth"`
 	NoisePackages       []string `json:"noisePackages"`
+	CollapseWiring      bool     `json:"collapseWiring"` // Collapse New*, setup*, init*, load*, FromEnv* functions
+	HideCmdMain         bool     `json:"hideCmdMain"`    // Hide nodes in cmd/* packages (except root)
 }
 
 // DefaultGraphFilter returns sensible defaults for graph filtering.
 func DefaultGraphFilter() GraphFilter {
 	return GraphFilter{
-		HideStdlib:    false,
-		HideVendors:   false,
-		StopAtIO:      false,
-		MaxDepth:      6,
-		NoisePackages: []string{},
+		HideStdlib:     false,
+		HideVendors:    false,
+		StopAtIO:       false,
+		MaxDepth:       6,
+		NoisePackages:  []string{},
+		CollapseWiring: true, // ON by default for cleaner graphs
+		HideCmdMain:    true, // ON by default to hide wiring code
 	}
 }
 
@@ -171,6 +175,11 @@ func (gb *GraphBuilder) shouldFilter(sym *store.Symbol) bool {
 		return true
 	}
 
+	// Filter cmd/* packages (unless it's the root node)
+	if gb.filter.HideCmdMain && isCmdPackage(sym.PkgPath) {
+		return true
+	}
+
 	// Filter noise packages
 	for _, noise := range gb.filter.NoisePackages {
 		if matchPackagePattern(noise, sym.PkgPath) {
@@ -190,6 +199,11 @@ func (gb *GraphBuilder) shouldStopExpansion(sym *store.Symbol, tags []store.Tag)
 				return true
 			}
 		}
+	}
+
+	// Stop at wiring functions (don't expand into their callees)
+	if gb.filter.CollapseWiring && isWiringFunction(sym.Name) {
+		return true
 	}
 
 	// Stop at specific package prefixes
@@ -332,5 +346,55 @@ func matchPackagePattern(pattern, pkgPath string) bool {
 		prefix := pattern[:len(pattern)-2]
 		return strings.HasPrefix(pkgPath, prefix+"/") || pkgPath == prefix
 	}
+	return false
+}
+
+// isCmdPackage checks if a package path is in a cmd/ directory.
+func isCmdPackage(pkgPath string) bool {
+	return strings.Contains(pkgPath, "/cmd/") || strings.HasPrefix(pkgPath, "cmd/")
+}
+
+// isWiringFunction checks if a function name matches wiring/config patterns.
+// These are typically constructors and setup functions that clutter the graph.
+func isWiringFunction(name string) bool {
+	lower := strings.ToLower(name)
+
+	// Check prefixes for common wiring patterns
+	wiringPrefixes := []string{
+		"new",       // NewService, NewHandler, etc.
+		"setup",     // SetupRoutes, SetupDB
+		"init",      // InitConfig, Initialize
+		"load",      // LoadConfig, LoadEnv
+		"fromenv",   // FromEnv, FromEnvironment
+		"configure", // ConfigureApp
+		"create",    // CreateClient (when it's just config)
+		"make",      // MakeHandler
+		"build",     // BuildConfig
+		"register",  // RegisterRoutes
+		"wire",      // WireApp
+		"bootstrap", // Bootstrap
+		"provide",   // ProvideService (DI)
+		"inject",    // InjectDeps
+	}
+
+	for _, prefix := range wiringPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+
+	// Check suffixes
+	wiringSuffixes := []string{
+		"config",
+		"options",
+		"provider",
+	}
+
+	for _, suffix := range wiringSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+
 	return false
 }
