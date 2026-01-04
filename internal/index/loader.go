@@ -14,12 +14,15 @@ import (
 )
 
 // LoadMode defines the packages.Load mode required for FlowLens indexing.
+// NeedDeps is required for SSA construction to resolve cross-package calls.
 const LoadMode = packages.NeedName |
 	packages.NeedFiles |
 	packages.NeedSyntax |
 	packages.NeedTypes |
 	packages.NeedTypesInfo |
-	packages.NeedModule
+	packages.NeedModule |
+	packages.NeedImports |
+	packages.NeedDeps
 
 // Loader handles loading Go packages and extracting symbols.
 type Loader struct {

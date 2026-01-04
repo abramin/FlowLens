@@ -343,3 +343,27 @@ func (b *BatchTx) InsertSymbol(sym *Symbol) (SymbolID, error) {
 	}
 	return SymbolID(id), nil
 }
+
+// InsertCallEdge inserts a call edge within the batch.
+func (b *BatchTx) InsertCallEdge(edge *CallEdge) error {
+	_, err := b.tx.Exec(`
+		INSERT INTO call_edges (caller_id, callee_id, caller_file, caller_line, call_kind, count)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(caller_id, callee_id, caller_file, caller_line) DO UPDATE SET
+			count = call_edges.count + excluded.count
+	`, edge.CallerID, edge.CalleeID, edge.CallerFile, edge.CallerLine, edge.CallKind, edge.Count)
+	return err
+}
+
+// GetSymbolID looks up a symbol's ID by its unique key within the batch.
+func (b *BatchTx) GetSymbolID(pkgPath, name, recvType string) (SymbolID, error) {
+	var id int64
+	err := b.tx.QueryRow(`
+		SELECT id FROM symbols
+		WHERE pkg_path = ? AND name = ? AND (recv_type = ? OR (recv_type IS NULL AND ? = ''))
+	`, pkgPath, name, recvType, recvType).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return SymbolID(id), nil
+}

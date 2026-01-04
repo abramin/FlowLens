@@ -26,6 +26,7 @@ type CallKind string
 const (
 	CallKindStatic    CallKind = "static"    // Direct function call
 	CallKindInterface CallKind = "interface" // Call through interface
+	CallKindFuncval   CallKind = "funcval"   // Call through function value
 	CallKindDefer     CallKind = "defer"     // Deferred call
 	CallKindGo        CallKind = "go"        // Goroutine call
 	CallKindUnknown   CallKind = "unknown"   // Dynamic dispatch, can't resolve

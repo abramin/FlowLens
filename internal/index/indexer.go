@@ -31,10 +31,15 @@ func NewIndexer(cfg *config.Config, projectDir string) *Indexer {
 
 // Result holds the results of an indexing run.
 type Result struct {
-	PackageCount int
-	SymbolCount  int
-	Duration     time.Duration
-	DBPath       string
+	PackageCount   int
+	SymbolCount    int
+	CallEdgeCount  int
+	StaticCalls    int
+	InterfaceCalls int
+	DeferCalls     int
+	GoCalls        int
+	Duration       time.Duration
+	DBPath         string
 }
 
 // Run executes the indexing pipeline.
@@ -70,6 +75,20 @@ func (idx *Indexer) Run() (*Result, error) {
 		return nil, fmt.Errorf("extracting symbols: %w", err)
 	}
 
+	// Build SSA and extract call graph
+	fmt.Println("Building call graph...")
+	cgResult, err := BuildAndExtract(loader, st, func(current, total int) {
+		if current%500 == 0 || current == total {
+			fmt.Printf("  Processing functions: %d/%d\n", current, total)
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building call graph: %w", err)
+	}
+	fmt.Printf("Extracted %d call edges (%d static, %d interface, %d defer, %d go)\n",
+		cgResult.EdgeCount, cgResult.StaticCalls, cgResult.InterfaceCalls,
+		cgResult.DeferCalls, cgResult.GoCalls)
+
 	// Store indexing metadata
 	if err := st.SetMetadata("indexed_at", time.Now().Format(time.RFC3339)); err != nil {
 		return nil, fmt.Errorf("storing metadata: %w", err)
@@ -90,9 +109,14 @@ func (idx *Indexer) Run() (*Result, error) {
 	}
 
 	return &Result{
-		PackageCount: stats.PackageCount,
-		SymbolCount:  stats.SymbolCount,
-		Duration:     time.Since(start),
-		DBPath:       st.DBPath(),
+		PackageCount:   stats.PackageCount,
+		SymbolCount:    stats.SymbolCount,
+		CallEdgeCount:  cgResult.EdgeCount,
+		StaticCalls:    cgResult.StaticCalls,
+		InterfaceCalls: cgResult.InterfaceCalls,
+		DeferCalls:     cgResult.DeferCalls,
+		GoCalls:        cgResult.GoCalls,
+		Duration:       time.Since(start),
+		DBPath:         st.DBPath(),
 	}, nil
 }
