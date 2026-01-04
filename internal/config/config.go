@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -149,13 +150,39 @@ func (c *Config) IsExcludedDir(dir string) bool {
 func (c *Config) GetLayerForPackage(pkgPath string) string {
 	for layer, patterns := range c.Layers {
 		for _, pattern := range patterns {
-			matched, err := filepath.Match(pattern, pkgPath)
-			if err == nil && matched {
+			if matchLayerPattern(pattern, pkgPath) {
 				return layer
 			}
 		}
 	}
 	return ""
+}
+
+// matchLayerPattern matches a package path against a layer pattern.
+// Supports ** for matching any number of path components.
+// Example: "**/handlers/**" matches "myapp/internal/handlers/user"
+func matchLayerPattern(pattern, pkgPath string) bool {
+	// Handle ** patterns by extracting the fixed middle part
+	// Pattern like "**/handlers/**" means: contains "/handlers/" or starts with "handlers/"
+	if len(pattern) >= 4 && pattern[:2] == "**" && pattern[len(pattern)-2:] == "**" {
+		// Pattern: **/xxx/** -> check if pkgPath contains /xxx/
+		middle := pattern[2 : len(pattern)-2] // e.g., "/handlers/"
+		if strings.Contains(pkgPath, middle) {
+			return true
+		}
+		// Also match if it starts with the middle part (without leading slash)
+		if len(middle) > 0 && middle[0] == '/' {
+			trimmed := middle[1:] // e.g., "handlers/"
+			if strings.HasPrefix(pkgPath, trimmed) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Fallback to filepath.Match for non-** patterns
+	matched, err := filepath.Match(pattern, pkgPath)
+	return err == nil && matched
 }
 
 // IsNoisePackage checks if a package should be considered noise.

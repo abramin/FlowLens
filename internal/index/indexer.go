@@ -43,6 +43,10 @@ type Result struct {
 	GRPCEntrypoints int
 	CLIEntrypoints  int
 	MainEntrypoints int
+	TagCount        int
+	IOTags          int
+	LayerTags       int
+	PurityTags      int
 	Duration        time.Duration
 	DBPath          string
 }
@@ -104,6 +108,16 @@ func (idx *Indexer) Run() (*Result, error) {
 		cgResult.EdgeCount, cgResult.StaticCalls, cgResult.InterfaceCalls,
 		cgResult.DeferCalls, cgResult.GoCalls)
 
+	// Apply tags
+	fmt.Println("Applying tags...")
+	tagger := NewTagger(idx.cfg, st)
+	tagResult, err := tagger.Tag()
+	if err != nil {
+		return nil, fmt.Errorf("tagging: %w", err)
+	}
+	fmt.Printf("Applied %d tags (%d io, %d layer, %d purity)\n",
+		tagResult.TotalTags, tagResult.IOTags, tagResult.LayerTags, tagResult.PurityTags)
+
 	// Store indexing metadata
 	if err := st.SetMetadata("indexed_at", time.Now().Format(time.RFC3339)); err != nil {
 		return nil, fmt.Errorf("storing metadata: %w", err)
@@ -136,6 +150,10 @@ func (idx *Indexer) Run() (*Result, error) {
 		GRPCEntrypoints: epResult.GRPCCount,
 		CLIEntrypoints:  epResult.CLICount,
 		MainEntrypoints: epResult.MainCount,
+		TagCount:        tagResult.TotalTags,
+		IOTags:          tagResult.IOTags,
+		LayerTags:       tagResult.LayerTags,
+		PurityTags:      tagResult.PurityTags,
 		Duration:        time.Since(start),
 		DBPath:          st.DBPath(),
 	}, nil

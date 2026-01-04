@@ -376,3 +376,139 @@ func (b *BatchTx) InsertEntrypoint(ep *Entrypoint) error {
 	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON)
 	return err
 }
+
+// InsertTag inserts a tag on a symbol within the batch.
+func (b *BatchTx) InsertTag(tag *Tag) error {
+	_, err := b.tx.Exec(`
+		INSERT INTO tags (symbol_id, tag, reason)
+		VALUES (?, ?, ?)
+		ON CONFLICT(symbol_id, tag) DO UPDATE SET
+			reason = excluded.reason
+	`, tag.SymbolID, tag.Tag, tag.Reason)
+	return err
+}
+
+// SymbolForTagging holds symbol data needed for tagging.
+type SymbolForTagging struct {
+	ID       SymbolID
+	PkgPath  string
+	Name     string
+	Kind     SymbolKind
+	RecvType string
+}
+
+// GetAllSymbolsForTagging returns all symbols with the data needed for tagging.
+func (s *Store) GetAllSymbolsForTagging() ([]SymbolForTagging, error) {
+	rows, err := s.db.Query(`
+		SELECT id, pkg_path, name, kind, COALESCE(recv_type, '') as recv_type
+		FROM symbols
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var symbols []SymbolForTagging
+	for rows.Next() {
+		var sym SymbolForTagging
+		if err := rows.Scan(&sym.ID, &sym.PkgPath, &sym.Name, &sym.Kind, &sym.RecvType); err != nil {
+			return nil, err
+		}
+		symbols = append(symbols, sym)
+	}
+	return symbols, rows.Err()
+}
+
+// PackageImport represents an import relationship between packages.
+type PackageImport struct {
+	PkgPath       string
+	ImportedPkg   string
+}
+
+// GetPackageImports returns all package import relationships from call edges.
+// A package is considered to import another if it has any call edges to symbols in that package.
+func (s *Store) GetPackageImports() (map[string][]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT s1.pkg_path as caller_pkg, s2.pkg_path as callee_pkg
+		FROM call_edges ce
+		JOIN symbols s1 ON ce.caller_id = s1.id
+		JOIN symbols s2 ON ce.callee_id = s2.id
+		WHERE s1.pkg_path != s2.pkg_path
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	imports := make(map[string][]string)
+	for rows.Next() {
+		var callerPkg, calleePkg string
+		if err := rows.Scan(&callerPkg, &calleePkg); err != nil {
+			return nil, err
+		}
+		imports[callerPkg] = append(imports[callerPkg], calleePkg)
+	}
+	return imports, rows.Err()
+}
+
+// SymbolCallee represents a callee symbol with its tags.
+type SymbolCallee struct {
+	CallerID SymbolID
+	CalleeID SymbolID
+	Tags     []string // Tags on the callee
+}
+
+// GetSymbolCalleesWithTags returns all caller-callee relationships with callee tags.
+// Used for purity analysis.
+func (s *Store) GetSymbolCalleesWithTags() (map[SymbolID][]SymbolCallee, error) {
+	rows, err := s.db.Query(`
+		SELECT ce.caller_id, ce.callee_id, COALESCE(GROUP_CONCAT(t.tag), '') as tags
+		FROM call_edges ce
+		LEFT JOIN tags t ON ce.callee_id = t.symbol_id
+		GROUP BY ce.caller_id, ce.callee_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[SymbolID][]SymbolCallee)
+	for rows.Next() {
+		var callerID, calleeID SymbolID
+		var tagsStr string
+		if err := rows.Scan(&callerID, &calleeID, &tagsStr); err != nil {
+			return nil, err
+		}
+		var tags []string
+		if tagsStr != "" {
+			tags = splitTags(tagsStr)
+		}
+		result[callerID] = append(result[callerID], SymbolCallee{
+			CallerID: callerID,
+			CalleeID: calleeID,
+			Tags:     tags,
+		})
+	}
+	return result, rows.Err()
+}
+
+// splitTags splits a comma-separated tag string.
+func splitTags(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			if i > start {
+				result = append(result, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		result = append(result, s[start:])
+	}
+	return result
+}
