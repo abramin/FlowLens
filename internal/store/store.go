@@ -142,10 +142,14 @@ func (s *Store) InsertCallEdge(edge *CallEdge) error {
 
 // InsertEntrypoint inserts an entrypoint and returns its ID.
 func (s *Store) InsertEntrypoint(ep *Entrypoint) (EntrypointID, error) {
+	discoveryMethod := ep.DiscoveryMethod
+	if discoveryMethod == "" {
+		discoveryMethod = "router"
+	}
 	result, err := s.db.Exec(`
-		INSERT INTO entrypoints (type, label, symbol_id, meta_json)
-		VALUES (?, ?, ?, ?)
-	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON)
+		INSERT INTO entrypoints (type, label, symbol_id, meta_json, discovery_method)
+		VALUES (?, ?, ?, ?, ?)
+	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON, discoveryMethod)
 	if err != nil {
 		return 0, err
 	}
@@ -370,11 +374,36 @@ func (b *BatchTx) GetSymbolID(pkgPath, name, recvType string) (SymbolID, error) 
 
 // InsertEntrypoint inserts an entrypoint within the batch and returns its ID.
 func (b *BatchTx) InsertEntrypoint(ep *Entrypoint) error {
+	discoveryMethod := ep.DiscoveryMethod
+	if discoveryMethod == "" {
+		discoveryMethod = "router"
+	}
 	_, err := b.tx.Exec(`
-		INSERT INTO entrypoints (type, label, symbol_id, meta_json)
-		VALUES (?, ?, ?, ?)
-	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON)
+		INSERT INTO entrypoints (type, label, symbol_id, meta_json, discovery_method)
+		VALUES (?, ?, ?, ?, ?)
+	`, ep.Type, ep.Label, ep.SymbolID, ep.MetaJSON, discoveryMethod)
 	return err
+}
+
+// GetHTTPEntrypointSymbolIDs returns all symbol IDs that are already HTTP entrypoints.
+func (b *BatchTx) GetHTTPEntrypointSymbolIDs() ([]SymbolID, error) {
+	rows, err := b.tx.Query(`
+		SELECT symbol_id FROM entrypoints WHERE type = ?
+	`, EntrypointHTTP)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []SymbolID
+	for rows.Next() {
+		var id SymbolID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // InsertTag inserts a tag on a symbol within the batch.
@@ -534,6 +563,29 @@ func (s *Store) GetSymbolByID(id SymbolID) (*Symbol, error) {
 	return sym, nil
 }
 
+// FindSymbolID finds a symbol ID by package path, name, and optional receiver type.
+func (s *Store) FindSymbolID(pkgPath, name, recvType string) (SymbolID, error) {
+	var id SymbolID
+	var err error
+
+	if recvType == "" {
+		err = s.db.QueryRow(`
+			SELECT id FROM symbols
+			WHERE pkg_path = ? AND name = ? AND (recv_type IS NULL OR recv_type = '')
+		`, pkgPath, name).Scan(&id)
+	} else {
+		err = s.db.QueryRow(`
+			SELECT id FROM symbols
+			WHERE pkg_path = ? AND name = ? AND recv_type = ?
+		`, pkgPath, name, recvType).Scan(&id)
+	}
+
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // GetSymbolTags retrieves all tags for a symbol.
 func (s *Store) GetSymbolTags(id SymbolID) ([]Tag, error) {
 	rows, err := s.db.Query(`
@@ -573,6 +625,7 @@ type EntrypointWithSymbol struct {
 func (s *Store) GetEntrypoints(filter EntrypointFilter) ([]EntrypointWithSymbol, error) {
 	query := `
 		SELECT e.id, e.type, e.label, e.symbol_id, COALESCE(e.meta_json, '') as meta_json,
+		       COALESCE(e.discovery_method, 'router') as discovery_method,
 		       s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
 		       s.file, s.line, COALESCE(s.sig, '') as sig
 		FROM entrypoints e
@@ -607,7 +660,7 @@ func (s *Store) GetEntrypoints(filter EntrypointFilter) ([]EntrypointWithSymbol,
 	for rows.Next() {
 		var ep EntrypointWithSymbol
 		err := rows.Scan(
-			&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON,
+			&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON, &ep.DiscoveryMethod,
 			&ep.Symbol.ID, &ep.Symbol.PkgPath, &ep.Symbol.Name, &ep.Symbol.Kind,
 			&ep.Symbol.RecvType, &ep.Symbol.File, &ep.Symbol.Line, &ep.Symbol.Sig,
 		)
@@ -624,13 +677,14 @@ func (s *Store) GetEntrypointByID(id EntrypointID) (*EntrypointWithSymbol, error
 	ep := &EntrypointWithSymbol{}
 	err := s.db.QueryRow(`
 		SELECT e.id, e.type, e.label, e.symbol_id, COALESCE(e.meta_json, '') as meta_json,
+		       COALESCE(e.discovery_method, 'router') as discovery_method,
 		       s.id, s.pkg_path, s.name, s.kind, COALESCE(s.recv_type, '') as recv_type,
 		       s.file, s.line, COALESCE(s.sig, '') as sig
 		FROM entrypoints e
 		JOIN symbols s ON e.symbol_id = s.id
 		WHERE e.id = ?
 	`, id).Scan(
-		&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON,
+		&ep.ID, &ep.Type, &ep.Label, &ep.SymbolID, &ep.MetaJSON, &ep.DiscoveryMethod,
 		&ep.Symbol.ID, &ep.Symbol.PkgPath, &ep.Symbol.Name, &ep.Symbol.Kind,
 		&ep.Symbol.RecvType, &ep.Symbol.File, &ep.Symbol.Line, &ep.Symbol.Sig,
 	)

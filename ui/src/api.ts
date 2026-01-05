@@ -1,14 +1,40 @@
-import type { Entrypoint, GraphResponse, GraphFilter, Stats, Symbol, Tag, SymbolDetails } from './types';
+import type { Entrypoint, GraphResponse, GraphFilter, Stats, Symbol, Tag, SymbolDetails, SpineResponse, CFGInfo } from './types';
 
 const API_BASE = '/api';
 
 async function fetchJSON<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (err) {
+    // Network error (server not running, CORS, etc.)
+    const message = err instanceof Error ? err.message : 'Network error';
+    throw new Error(`Failed to connect to server: ${message}`);
   }
-  return response.json();
+
+  if (!response.ok) {
+    // Try to get error message from JSON response
+    const text = await response.text();
+    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+    try {
+      const errorJson = JSON.parse(text);
+      if (errorJson.error) {
+        errorMessage = errorJson.error;
+      }
+    } catch {
+      // Response wasn't JSON, include raw text if short
+      if (text.length < 200) {
+        errorMessage = `${errorMessage} - ${text}`;
+      }
+    }
+    throw new Error(errorMessage);
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new Error('Invalid JSON response from server');
+  }
 }
 
 export async function getStats(): Promise<Stats> {
@@ -26,6 +52,11 @@ export async function getEntrypoints(type?: string, query?: string): Promise<Ent
 
 export async function getEntrypointById(id: number): Promise<Entrypoint> {
   return fetchJSON<Entrypoint>(`${API_BASE}/entrypoints/${id}`);
+}
+
+export async function getEntrypointBySymbolId(symbolId: number): Promise<Entrypoint | null> {
+  const entrypoints = await getEntrypoints();
+  return entrypoints.find((e) => e.symbol_id === symbolId) ?? null;
 }
 
 export async function getSymbol(id: number): Promise<SymbolDetails> {
@@ -66,4 +97,23 @@ export async function searchSymbols(query: string, limit?: number): Promise<Arra
   const params = new URLSearchParams({ query });
   if (limit) params.set('limit', limit.toString());
   return fetchJSON<Array<{ symbol: Symbol; tags: Tag[] }>>(`${API_BASE}/search?${params}`);
+}
+
+export async function getSpine(
+  symbolId: number,
+  depth?: number,
+  filters?: GraphFilter
+): Promise<SpineResponse> {
+  const params = new URLSearchParams();
+  if (depth) params.set('depth', depth.toString());
+  if (filters) params.set('filters', JSON.stringify(filters));
+  const queryString = params.toString();
+  const url = queryString
+    ? `${API_BASE}/spine/${symbolId}?${queryString}`
+    : `${API_BASE}/spine/${symbolId}`;
+  return fetchJSON<SpineResponse>(url);
+}
+
+export async function getCFG(symbolId: number): Promise<CFGInfo> {
+  return fetchJSON<CFGInfo>(`${API_BASE}/cfg/${symbolId}`);
 }

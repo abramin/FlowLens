@@ -74,11 +74,12 @@ type CallEdge struct {
 
 // Entrypoint represents a program entrypoint.
 type Entrypoint struct {
-	ID       EntrypointID   `json:"id"`
-	Type     EntrypointType `json:"type"`
-	Label    string         `json:"label"` // Human-readable label, e.g., "GET /api/users"
-	SymbolID SymbolID       `json:"symbol_id"`
-	MetaJSON string         `json:"meta_json,omitempty"` // Additional metadata as JSON
+	ID              EntrypointID   `json:"id"`
+	Type            EntrypointType `json:"type"`
+	Label           string         `json:"label"`                      // Human-readable label, e.g., "GET /api/users"
+	SymbolID        SymbolID       `json:"symbol_id"`
+	MetaJSON        string         `json:"meta_json,omitempty"`        // Additional metadata as JSON
+	DiscoveryMethod string         `json:"discovery_method,omitempty"` // How this was discovered: "router" or "signature"
 }
 
 // Tag represents a tag on a symbol.

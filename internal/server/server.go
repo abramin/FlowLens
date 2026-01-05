@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abramin/flowlens/internal/index"
 	"github.com/abramin/flowlens/internal/store"
 )
 
@@ -49,6 +50,8 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/symbol/", s.corsMiddleware(s.handleSymbol))
 	mux.HandleFunc("/api/search", s.corsMiddleware(s.handleSearch))
 	mux.HandleFunc("/api/graph/", s.corsMiddleware(s.handleGraph))
+	mux.HandleFunc("/api/spine/", s.corsMiddleware(s.handleSpine))
+	mux.HandleFunc("/api/cfg/", s.corsMiddleware(s.handleCFG))
 	mux.HandleFunc("/api/stats", s.corsMiddleware(s.handleStats))
 
 	// Health check
@@ -129,8 +132,9 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	}
 }
 
-// writeError writes a JSON error response.
+// writeError writes a JSON error response and logs it.
 func writeError(w http.ResponseWriter, status int, message string) {
+	log.Printf("API error [%d]: %s", status, message)
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
@@ -152,7 +156,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := s.store.GetStats()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get stats")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get stats: %v", err))
 		return
 	}
 
@@ -178,7 +182,7 @@ func (s *Server) handleEntrypoints(w http.ResponseWriter, r *http.Request) {
 
 	entrypoints, err := s.store.GetEntrypoints(filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get entrypoints")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get entrypoints: %v", err))
 		return
 	}
 
@@ -202,7 +206,7 @@ func (s *Server) handleEntrypointByID(w http.ResponseWriter, r *http.Request) {
 
 	ep, err := s.store.GetEntrypointByID(store.EntrypointID(id))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "entrypoint not found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("entrypoint not found: %v", err))
 		return
 	}
 
@@ -226,7 +230,7 @@ func (s *Server) handleSymbol(w http.ResponseWriter, r *http.Request) {
 
 	sym, err := s.store.GetSymbolByID(store.SymbolID(id))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "symbol not found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("symbol not found: %v", err))
 		return
 	}
 
@@ -289,7 +293,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := s.store.SearchSymbols(query, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "search failed")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("search failed: %v", err))
 		return
 	}
 
@@ -343,7 +347,7 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 
 	// Verify symbol exists
 	if _, err := s.store.GetSymbolByID(symbolID); err != nil {
-		writeError(w, http.StatusNotFound, "symbol not found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("symbol not found: %v", err))
 		return
 	}
 
@@ -362,10 +366,97 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build graph")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build graph: %v", err))
 		return
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// handleSpine handles GET /api/spine/:symbolId?depth=N&filters={...}
+// Returns a call spine visualization with main path and collapsed branches.
+func (s *Server) handleSpine(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Extract symbol ID from path: /api/spine/123
+	path := strings.TrimPrefix(r.URL.Path, "/api/spine/")
+	id, err := strconv.ParseInt(path, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid symbol ID")
+		return
+	}
+
+	symbolID := store.SymbolID(id)
+
+	// Parse depth parameter (default: 10)
+	depth := 10
+	if depthStr := r.URL.Query().Get("depth"); depthStr != "" {
+		if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
+			depth = d
+		}
+	}
+
+	// Parse filters from query parameter (URL-encoded JSON)
+	filter := DefaultGraphFilter()
+	if filtersStr := r.URL.Query().Get("filters"); filtersStr != "" {
+		if err := json.Unmarshal([]byte(filtersStr), &filter); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid filters JSON")
+			return
+		}
+	}
+
+	// Verify symbol exists
+	if _, err := s.store.GetSymbolByID(symbolID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("symbol not found: %v", err))
+		return
+	}
+
+	// Build the spine
+	builder := NewSpineBuilder(s.store, filter)
+	response, err := builder.BuildSpine(symbolID, depth)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build spine: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// handleCFG handles GET /api/cfg/:symbolId
+// Returns the control flow graph for a function.
+func (s *Server) handleCFG(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Extract symbol ID from path: /api/cfg/123
+	path := strings.TrimPrefix(r.URL.Path, "/api/cfg/")
+	id, err := strconv.ParseInt(path, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid symbol ID")
+		return
+	}
+
+	symbolID := store.SymbolID(id)
+
+	// Verify symbol exists
+	if _, err := s.store.GetSymbolByID(symbolID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("symbol not found: %v", err))
+		return
+	}
+
+	// Build the CFG (this rebuilds SSA on-demand)
+	builder := index.NewCFGBuilder(s.store)
+	cfg, err := builder.BuildCFG(symbolID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build CFG: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cfg)
 }
 
